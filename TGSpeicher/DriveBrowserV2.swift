@@ -353,7 +353,7 @@ struct FileRowV2: View {
             }
             Spacer()
             Image(systemName: selected ? "checkmark.circle.fill" : "chevron.right")
-                .foregroundStyle(selected ? .blue : .tertiary)
+                .foregroundStyle(selected ? Color.blue : Color.secondary)
         }
         .tgGlassCard()
     }
