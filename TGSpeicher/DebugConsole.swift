@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 
+// Emergency controls are mounted at the app root so recovery stays available on every screen.
 struct EmergencyDebugOverlay: View {
     @ObservedObject var telegram: TelegramClient
     @State private var showConsole = false
