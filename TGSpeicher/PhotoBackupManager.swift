@@ -46,6 +46,7 @@ final class PhotoBackupManager: ObservableObject {
     @Published private(set) var isNightMode = false
     @Published private(set) var isExportingFromPhotos = false
     @Published private(set) var isVerifying = false
+    @Published private(set) var isScanningLibrary = false
     @Published private(set) var currentFileName: String?
     @Published private(set) var iCloudProgress: Double = 0
     @Published private(set) var statusText = "Photo backup is ready"
@@ -58,6 +59,7 @@ final class PhotoBackupManager: ObservableObject {
     private let queue: UploadQueueManager
     private let telegram: TelegramClient
     private let defaults = UserDefaults.standard
+    private let libraryScanQueue = DispatchQueue(label: "eu.simplexsmp.tgspeicher.photos.scan", qos: .utility)
     private var cancellables = Set<AnyCancellable>()
     private var candidates: [PhotoBackupCandidate] = []
     private var recordsByKey: [String: PhotoBackupRecord] = [:]
@@ -70,6 +72,8 @@ final class PhotoBackupManager: ObservableObject {
     private var previousBrightness: CGFloat?
     private var previousIdleTimerDisabled: Bool?
     private var snapshotMessageID: Int64?
+    private var libraryScanGeneration = UUID()
+    private var lastLibraryScanAt: Date?
 
     private static let autoResumeKey = "photos.autoResumeOnLaunch.v1"
     private static let marker = "#TGSpeicherPhotoBackupIndexV1"
@@ -100,14 +104,22 @@ final class PhotoBackupManager: ObservableObject {
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-                if self.hasLibraryAccess {
+                guard self.hasLibraryAccess else { return }
+                // Do not repeatedly rescan a large iCloud library every time a sheet closes
+                // or the app becomes active. A fresh scan can still be requested manually.
+                if self.lastLibraryScanAt == nil || Date().timeIntervalSince(self.lastLibraryScanAt!) > 60 {
                     self.refreshLibrary()
+                } else {
                     self.maybeAutoStart()
                 }
             }
             .store(in: &cancellables)
 
-        if hasLibraryAccess { refreshLibrary() }
+        // Crucial: never enumerate the entire Photos library synchronously from init.
+        // Give SwiftUI a chance to render first; refreshLibrary itself runs off-main.
+        if hasLibraryAccess {
+            DispatchQueue.main.async { [weak self] in self?.refreshLibrary() }
+        }
     }
 
     var hasLibraryAccess: Bool {
@@ -133,8 +145,8 @@ final class PhotoBackupManager: ObservableObject {
                 guard let self else { return }
                 self.authorizationStatus = status
                 if self.hasLibraryAccess {
-                    self.refreshLibrary()
                     self.statusText = status == .limited ? "Limited Photos access granted" : "Full Photos access granted"
+                    self.refreshLibrary()
                 } else {
                     self.lastError = "TGSpeicher needs Photos access to back up your library."
                 }
@@ -144,24 +156,58 @@ final class PhotoBackupManager: ObservableObject {
 
     func refreshLibrary() {
         guard hasLibraryAccess else { return }
-        let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        let fetch = PHAsset.fetchAssets(with: options)
-        var newCandidates: [PhotoBackupCandidate] = []
-        newCandidates.reserveCapacity(fetch.count)
+        guard !isScanningLibrary else { return }
 
-        fetch.enumerateObjects { asset, _, _ in
-            for resource in self.preferredResources(for: asset) {
-                let name = resource.originalFilename.isEmpty ? self.fallbackName(asset: asset, resource: resource) : resource.originalFilename
-                let mediaKind = self.mediaKind(asset: asset, resource: resource)
-                newCandidates.append(PhotoBackupCandidate(asset: asset, resource: resource, fileName: name, mediaKind: mediaKind))
+        let generation = UUID()
+        libraryScanGeneration = generation
+        isScanningLibrary = true
+        statusText = "Scanning Photos library in background…"
+
+        libraryScanQueue.async { [weak self] in
+            guard let self else { return }
+            let options = PHFetchOptions()
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+            let fetch = PHAsset.fetchAssets(with: options)
+            let assetCount = fetch.count
+            var newCandidates: [PhotoBackupCandidate] = []
+            newCandidates.reserveCapacity(max(assetCount, 1))
+
+            fetch.enumerateObjects { asset, _, _ in
+                for resource in Self.preferredResourcesBackground(for: asset) {
+                    let name = resource.originalFilename.isEmpty
+                        ? Self.fallbackNameBackground(asset: asset, resource: resource)
+                        : resource.originalFilename
+                    let mediaKind = Self.mediaKindBackground(asset: asset, resource: resource)
+                    newCandidates.append(
+                        PhotoBackupCandidate(
+                            asset: asset,
+                            resource: resource,
+                            fileName: name,
+                            mediaKind: mediaKind
+                        )
+                    )
+                }
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.libraryScanGeneration == generation else { return }
+                self.candidates = newCandidates
+                self.totalAssets = assetCount
+                self.isScanningLibrary = false
+                self.lastLibraryScanAt = Date()
+                self.reconcileRecordsWithCloudIndex()
+                self.recalculateCounters()
+                self.statusText = self.pendingResources == 0
+                    ? "Photos library is fully backed up"
+                    : "Photos scan complete • \(self.pendingResources) resource(s) pending"
+
+                if self.isRunning && !self.isPaused {
+                    self.processNextIfPossible()
+                } else {
+                    self.maybeAutoStart()
+                }
             }
         }
-
-        candidates = newCandidates
-        totalAssets = fetch.count
-        reconcileRecordsWithCloudIndex()
-        recalculateCounters()
     }
 
     func startBackup(nightMode: Bool = false) {
@@ -175,8 +221,12 @@ final class PhotoBackupManager: ObservableObject {
         isNightMode = nightMode
         statusText = nightMode ? "Night backup running" : "Photo backup running"
         if nightMode { applyNightMode() }
-        refreshLibrary()
-        processNextIfPossible()
+
+        if candidates.isEmpty || lastLibraryScanAt == nil {
+            refreshLibrary()
+        } else {
+            processNextIfPossible()
+        }
     }
 
     func pauseBackup() {
@@ -193,7 +243,11 @@ final class PhotoBackupManager: ObservableObject {
         isNightMode = nightMode
         if nightMode { applyNightMode() }
         statusText = nightMode ? "Night backup resumed" : "Photo backup resumed"
-        processNextIfPossible()
+        if candidates.isEmpty || lastLibraryScanAt == nil {
+            refreshLibrary()
+        } else {
+            processNextIfPossible()
+        }
     }
 
     func stopBackup() {
@@ -289,6 +343,10 @@ final class PhotoBackupManager: ObservableObject {
     private func processNextIfPossible() {
         guard isRunning, !isPaused, currentCandidate == nil, currentQueueItemID == nil else { return }
         guard !isExportingFromPhotos else { return }
+        guard !isScanningLibrary else {
+            statusText = "Scanning Photos library in background…"
+            return
+        }
         if isNightMode { applyNightMode() }
 
         let folderID = ensureBackupFolder()
@@ -429,7 +487,7 @@ final class PhotoBackupManager: ObservableObject {
         DispatchQueue.main.async { [weak self] in self?.processNextIfPossible() }
     }
 
-    private func preferredResources(for asset: PHAsset) -> [PHAssetResource] {
+    private nonisolated static func preferredResourcesBackground(for asset: PHAsset) -> [PHAssetResource] {
         let all = PHAssetResource.assetResources(for: asset)
         if asset.mediaType == .video {
             if let full = all.first(where: { $0.type == .fullSizeVideo }) { return [full] }
@@ -450,12 +508,12 @@ final class PhotoBackupManager: ObservableObject {
         return result
     }
 
-    private func mediaKind(asset: PHAsset, resource: PHAssetResource) -> String {
+    private nonisolated static func mediaKindBackground(asset: PHAsset, resource: PHAssetResource) -> String {
         if resource.type == .video || resource.type == .fullSizeVideo || resource.type == .pairedVideo || resource.type == .fullSizePairedVideo { return "video" }
         return asset.mediaType == .video ? "video" : "photo"
     }
 
-    private func fallbackName(asset: PHAsset, resource: PHAssetResource) -> String {
+    private nonisolated static func fallbackNameBackground(asset: PHAsset, resource: PHAssetResource) -> String {
         let ext: String
         switch resource.type {
         case .video, .fullSizeVideo, .pairedVideo, .fullSizePairedVideo: ext = "mov"
@@ -586,7 +644,7 @@ final class PhotoBackupManager: ObservableObject {
             guard let self else { return }
             guard response["@type"] as? String != "error" else {
                 self.remoteIndexReady = true
-                self.maybeAutoStart()
+                if self.hasLibraryAccess { self.refreshLibrary() }
                 return
             }
             let messages = response["messages"] as? [[String: Any]] ?? []
@@ -594,7 +652,8 @@ final class PhotoBackupManager: ObservableObject {
                   let messageID = TelegramClient.int64(message["id"]),
                   let fileID = self.documentFileID(from: message) else {
                 self.remoteIndexReady = true
-                self.maybeAutoStart()
+                if self.hasLibraryAccess { self.refreshLibrary() }
+                else { self.maybeAutoStart() }
                 return
             }
             self.snapshotMessageID = messageID
@@ -613,8 +672,8 @@ final class PhotoBackupManager: ObservableObject {
                     self.persistLocalIndex()
                 }
                 self.remoteIndexReady = true
-                self.refreshLibrary()
-                self.maybeAutoStart()
+                if self.hasLibraryAccess { self.refreshLibrary() }
+                else { self.maybeAutoStart() }
             }
         }
     }
@@ -628,7 +687,8 @@ final class PhotoBackupManager: ObservableObject {
 
     private func maybeAutoStart() {
         guard remoteIndexReady, hasLibraryAccess, autoResumeOnLaunch,
-              defaults.bool(forKey: "photos.backupEnabled"), !isRunning, pendingResources > 0 else { return }
+              defaults.bool(forKey: "photos.backupEnabled"), !isRunning, !isScanningLibrary,
+              lastLibraryScanAt != nil, pendingResources > 0 else { return }
         startBackup(nightMode: false)
     }
 
