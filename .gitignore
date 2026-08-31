@@ -1,0 +1,17 @@
+# Xcode
+*.xcuserstate
+xcuserdata/
+DerivedData/
+build/
+*.ipa
+Payload/
+
+# XcodeGen output (generated in CI)
+TGSpeicher.xcodeproj/
+
+# macOS
+.DS_Store
+
+# SwiftPM
+.build/
+.swiftpm/
