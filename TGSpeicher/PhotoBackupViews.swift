@@ -1,20 +1,72 @@
 import SwiftUI
 import Photos
+import Combine
+
+@MainActor
+private final class TGCloudGalleryModel: ObservableObject {
+    @Published private(set) var records: [PhotoBackupRecord] = []
+    @Published private(set) var sizeByCloudFileID: [UUID: Int64] = [:]
+    @Published private(set) var isPreparing = true
+
+    private weak var manager: PhotoBackupManager?
+    private weak var cloud: CloudStore?
+    private var cancellables = Set<AnyCancellable>()
+    private var generation = 0
+
+    init(manager: PhotoBackupManager, cloud: CloudStore) {
+        self.manager = manager
+        self.cloud = cloud
+
+        manager.$backedUpResources
+            .removeDuplicates()
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.refresh() }
+            .store(in: &cancellables)
+
+        refresh()
+    }
+
+    func refresh() {
+        guard let manager, let cloud else { return }
+        generation += 1
+        let token = generation
+        let source = manager.records
+        let files = cloud.index.files
+        if records.isEmpty { isPreparing = true }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let grouped = Dictionary(grouping: source, by: { $0.assetLocalIdentifier })
+            let result = grouped.values
+                .compactMap { group in group.first(where: { $0.mediaKind == "photo" }) ?? group.first }
+                .sorted { $0.uploadedAt > $1.uploadedAt }
+            let sizes = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0.totalSize) })
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self, token == self.generation else { return }
+                self.records = result
+                self.sizeByCloudFileID = sizes
+                self.isPreparing = false
+            }
+        }
+    }
+}
 
 struct PhotoBackupView: View {
     @ObservedObject var manager: PhotoBackupManager
-    @ObservedObject var cloud: CloudStore
+    let cloud: CloudStore
     @ObservedObject var telemetry: TelegramTransferTelemetry
     let telegram: TelegramClient
 
+    @StateObject private var galleryModel: TGCloudGalleryModel
     @State private var selectedCloudFileID: UUID?
     @State private var confirmDeleteLocal = false
 
-    private var galleryRecords: [PhotoBackupRecord] {
-        Dictionary(grouping: manager.records, by: { $0.assetLocalIdentifier })
-            .values
-            .compactMap { group in group.first(where: { $0.mediaKind == "photo" }) ?? group.first }
-            .sorted { $0.uploadedAt > $1.uploadedAt }
+    init(manager: PhotoBackupManager, cloud: CloudStore, telemetry: TelegramTransferTelemetry, telegram: TelegramClient) {
+        self.manager = manager
+        self.cloud = cloud
+        self.telemetry = telemetry
+        self.telegram = telegram
+        _galleryModel = StateObject(wrappedValue: TGCloudGalleryModel(manager: manager, cloud: cloud))
     }
 
     var body: some View {
@@ -25,7 +77,11 @@ struct PhotoBackupView: View {
                 if manager.hasLibraryAccess {
                     statistics
                     controls
-                    gallery
+                    CloudGallerySection(
+                        model: galleryModel,
+                        selectedCloudFileID: $selectedCloudFileID
+                    )
+                    .equatable()
                 } else {
                     permissionCard
                 }
@@ -35,8 +91,13 @@ struct PhotoBackupView: View {
         .navigationTitle("Photo Backup")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { manager.refreshLibrary() } label: { Image(systemName: "arrow.clockwise") }
-                    .disabled(!manager.hasLibraryAccess)
+                Button {
+                    manager.refreshLibrary()
+                    galleryModel.refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(!manager.hasLibraryAccess)
             }
         }
         .sheet(isPresented: Binding(
@@ -78,7 +139,7 @@ struct PhotoBackupView: View {
                 .frame(width: 58, height: 58)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Telegram Photo Vault").font(.title3.bold())
-                    Text(manager.statusText).font(.caption).foregroundStyle(.secondary)
+                    Text(manager.statusText).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
                 if manager.isRunning { ProgressView() }
@@ -166,44 +227,13 @@ struct PhotoBackupView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .tgGlassCard()
     }
-
-    private var gallery: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Cloud Gallery", systemImage: "photo.stack").font(.headline)
-                Spacer()
-                Text("\(galleryRecords.count)").foregroundStyle(.secondary)
-            }
-
-            if galleryRecords.isEmpty {
-                ContentUnavailableView(
-                    "No backed-up media yet",
-                    systemImage: "photo.stack",
-                    description: Text("Start Photo Backup and your Telegram cloud gallery will appear here.")
-                )
-                .frame(maxWidth: .infinity)
-            } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 8)], spacing: 8) {
-                    ForEach(galleryRecords) { record in
-                        Button {
-                            selectedCloudFileID = record.cloudFileID
-                        } label: {
-                            CloudPhotoTile(record: record, manager: manager, cloud: cloud)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .tgGlassCard()
-    }
 }
 
 private struct PhotoMetric: View {
     let title: String
     let value: String
     let icon: String
+
     var body: some View {
         VStack(spacing: 5) {
             Image(systemName: icon).foregroundStyle(.blue)
@@ -215,34 +245,177 @@ private struct PhotoMetric: View {
     }
 }
 
+private struct CloudGallerySection: View, Equatable {
+    @ObservedObject var model: TGCloudGalleryModel
+    @Binding var selectedCloudFileID: UUID?
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var visibleLimit = 60
+
+    static func == (lhs: CloudGallerySection, rhs: CloudGallerySection) -> Bool {
+        lhs.model === rhs.model
+    }
+
+    private var columns: [GridItem] {
+        let count = horizontalSizeClass == .regular ? 5 : 3
+        return Array(repeating: GridItem(.flexible(), spacing: 6), count: count)
+    }
+
+    private var visibleRecords: ArraySlice<PhotoBackupRecord> {
+        model.records.prefix(visibleLimit)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Cloud Gallery", systemImage: "photo.stack").font(.headline)
+                Spacer()
+                if model.isPreparing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("\(model.records.count)").foregroundStyle(.secondary)
+                }
+            }
+
+            if model.isPreparing && model.records.isEmpty {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Preparing gallery efficiently…").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+            } else if model.records.isEmpty {
+                ContentUnavailableView(
+                    "No backed-up media yet",
+                    systemImage: "photo.stack",
+                    description: Text("Start Photo Backup and your Telegram cloud gallery will appear here.")
+                )
+                .frame(maxWidth: .infinity)
+            } else {
+                LazyVGrid(columns: columns, spacing: 6) {
+                    ForEach(visibleRecords) { record in
+                        Button {
+                            selectedCloudFileID = record.cloudFileID
+                        } label: {
+                            CloudPhotoTile(
+                                record: record,
+                                size: model.sizeByCloudFileID[record.cloudFileID]
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if model.records.count > visibleLimit {
+                    GalleryLoadSentinel(remaining: model.records.count - visibleLimit) {
+                        visibleLimit = min(model.records.count, visibleLimit + 60)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .tgGlassCard()
+        .onChange(of: model.records.count) { _, count in
+            if count < visibleLimit { visibleLimit = max(60, count) }
+        }
+    }
+}
+
 private struct CloudPhotoTile: View {
     let record: PhotoBackupRecord
-    @ObservedObject var manager: PhotoBackupManager
-    @ObservedObject var cloud: CloudStore
+    let size: Int64?
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             PhotoLibraryThumbnail(assetIdentifier: record.assetLocalIdentifier, mediaKind: record.mediaKind)
-                .frame(height: 112)
-                .clipped()
-            LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .center, endPoint: .bottom)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(record.fileName).font(.caption2.weight(.semibold)).lineLimit(1)
-                if let file = manager.cloudFile(for: record) {
-                    Text(file.totalSize.byteCountString).font(.caption2).opacity(0.8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.08), .black.opacity(0.78)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(record.fileName)
+                    .font(.caption2.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                if let size {
+                    Text(size.byteCountString)
+                        .font(.caption2)
+                        .opacity(0.82)
+                        .lineLimit(1)
                 }
             }
             .foregroundStyle(.white)
             .padding(7)
         }
+        .aspectRatio(1, contentMode: .fit)
         .background(.secondary.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(alignment: .topTrailing) {
             Image(systemName: record.mediaKind == "video" ? "play.circle.fill" : "checkmark.icloud.fill")
+                .font(.caption.weight(.bold))
                 .foregroundStyle(.white)
-                .shadow(radius: 4)
+                .shadow(radius: 3)
                 .padding(6)
         }
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private final class TGPhotoThumbnailPipeline {
+    static let shared = TGPhotoThumbnailPipeline()
+
+    private let imageManager = PHCachingImageManager()
+    private let cache = NSCache<NSString, UIImage>()
+
+    private init() {
+        cache.countLimit = 240
+        cache.totalCostLimit = 48 * 1024 * 1024
+    }
+
+    func request(
+        assetIdentifier: String,
+        targetSize: CGSize,
+        completion: @escaping (UIImage?) -> Void
+    ) -> PHImageRequestID? {
+        let key = assetIdentifier as NSString
+        if let cached = cache.object(forKey: key) {
+            DispatchQueue.main.async { completion(cached) }
+            return nil
+        }
+
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil).firstObject else {
+            DispatchQueue.main.async { completion(nil) }
+            return nil
+        }
+
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .opportunistic
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = false
+
+        return imageManager.requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: options
+        ) { [weak self] result, info in
+            guard let self, let result else { return }
+            let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+            guard !cancelled else { return }
+            let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            if !degraded {
+                let cost = Int(result.size.width * result.size.height * 4)
+                self.cache.setObject(result, forKey: key, cost: cost)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    func cancel(_ requestID: PHImageRequestID) {
+        imageManager.cancelImageRequest(requestID)
     }
 }
 
@@ -250,34 +423,61 @@ private struct PhotoLibraryThumbnail: View {
     let assetIdentifier: String
     let mediaKind: String
     @State private var image: UIImage?
+    @State private var requestID: PHImageRequestID?
 
     var body: some View {
         ZStack {
             Rectangle().fill(.secondary.opacity(0.12))
             if let image {
-                Image(uiImage: image).resizable().scaledToFill()
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
             } else {
                 Image(systemName: mediaKind == "video" ? "video.fill" : "photo.fill")
-                    .font(.title2).foregroundStyle(.secondary)
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
             }
         }
+        .clipped()
         .onAppear(perform: requestThumbnail)
+        .onDisappear {
+            if let requestID {
+                TGPhotoThumbnailPipeline.shared.cancel(requestID)
+                self.requestID = nil
+            }
+        }
     }
 
     private func requestThumbnail() {
-        guard image == nil,
-              let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil).firstObject else { return }
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .opportunistic
-        options.resizeMode = .fast
-        options.isNetworkAccessAllowed = false
-        PHImageManager.default().requestImage(
-            for: asset,
-            targetSize: CGSize(width: 260, height: 260),
-            contentMode: .aspectFill,
-            options: options
-        ) { result, _ in
-            if let result { DispatchQueue.main.async { image = result } }
+        guard image == nil, requestID == nil else { return }
+        requestID = TGPhotoThumbnailPipeline.shared.request(
+            assetIdentifier: assetIdentifier,
+            targetSize: CGSize(width: 240, height: 240)
+        ) { result in
+            image = result
+            requestID = nil
+        }
+    }
+}
+
+private struct GalleryLoadSentinel: View {
+    let remaining: Int
+    let load: () -> Void
+    @State private var didTrigger = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("\(remaining) more items")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .onAppear {
+            guard !didTrigger else { return }
+            didTrigger = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { load() }
         }
     }
 }
