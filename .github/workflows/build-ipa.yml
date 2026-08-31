@@ -66,14 +66,14 @@ jobs:
           rm -rf Payload
           mkdir Payload
           cp -R "$APP_PATH" Payload/TGSpeicher.app
-          ditto -c -k --sequesterRsrc --keepParent Payload TGSpeicher-v1.1.1-unsigned.ipa
-          ls -lh TGSpeicher-v1.1.1-unsigned.ipa
+          ditto -c -k --sequesterRsrc --keepParent Payload TGSpeicher-v1.1.2-unsigned.ipa
+          ls -lh TGSpeicher-v1.1.2-unsigned.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v1.1.1-unsigned-IPA
-          path: TGSpeicher-v1.1.1-unsigned.ipa
+          name: TGSpeicher-v1.1.2-unsigned-IPA
+          path: TGSpeicher-v1.1.2-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
 
@@ -81,7 +81,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v1.1.1-build-log
+          name: TGSpeicher-v1.1.2-build-log
           path: xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
