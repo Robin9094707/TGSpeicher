@@ -106,7 +106,7 @@ struct DriveShellV2: View {
     var body: some View {
         TabView {
             NavigationStack {
-                DriveBrowserV2(
+                OptimizedDriveBrowserV2(
                     folderID: nil,
                     title: "TG Drive",
                     cloud: cloud,
