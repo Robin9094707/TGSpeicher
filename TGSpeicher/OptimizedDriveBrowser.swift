@@ -112,8 +112,6 @@ private final class TGDirectorySnapshotController: ObservableObject {
             }
         }
 
-        // Aggregate a file into its folder and every ancestor exactly once.
-        // This replaces the old repeated recursive scans performed by every folder row.
         for file in index.files {
             guard var current = file.folderID else { continue }
             var visited = Set<UUID>()
@@ -375,6 +373,7 @@ struct OptimizedDriveBrowserV2: View {
                             ProgressiveLoadSentinel(text: "More folders") {
                                 visibleFolderLimit = min(directory.folders.count, visibleFolderLimit + 80)
                             }
+                            .id("folders-\(visibleFolderLimit)")
                         }
                     }
 
@@ -408,6 +407,7 @@ struct OptimizedDriveBrowserV2: View {
                             ProgressiveLoadSentinel(text: "More files") {
                                 visibleFileLimit = min(directory.files.count, visibleFileLimit + 120)
                             }
+                            .id("files-\(visibleFileLimit)")
                         }
                     }
                 }
@@ -466,6 +466,7 @@ struct OptimizedDriveBrowserV2: View {
                             visibleFolderLimit = min(directory.folders.count, visibleFolderLimit + 80)
                             visibleFileLimit = min(directory.files.count, visibleFileLimit + 120)
                         }
+                        .id("grid-\(visibleFolderLimit)-\(visibleFileLimit)")
                     }
                 }
             }
@@ -485,7 +486,7 @@ struct OptimizedDriveBrowserV2: View {
 
             HStack(spacing: 8) {
                 Image(systemName: directory.isLoading ? "hourglass" : (folderID == nil ? "checkmark.icloud.fill" : "folder.fill"))
-                    .foregroundStyle(folderID == nil ? .blue : .orange)
+                    .foregroundStyle(folderID == nil ? Color.blue : Color.orange)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(folderID == nil ? "Telegram cloud workspace" : "Lazy folder view")
                         .font(.subheadline.weight(.semibold))
@@ -498,7 +499,9 @@ struct OptimizedDriveBrowserV2: View {
                 Spacer()
                 if directory.isLoading { ProgressView().controlSize(.small) }
             }
-            .tgBrowserInfoCard()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .padding(.top, 4)
     }
