@@ -16,6 +16,11 @@ final class TelegramClient: ObservableObject {
     private let lock = NSLock()
     private let receiveQueue = DispatchQueue(label: "eu.simplexsmp.tgspeicher.tdlib.receive", qos: .userInitiated)
 
+    // TDLib drives authorization through updateAuthorizationState. Keep a guard here so
+    // setTdlibParameters can never be sent twice if multiple state messages arrive close together.
+    private var tdlibParametersInFlight = false
+    private var tdlibParametersConfigured = false
+
     private let apiIDKey = "telegram.api-id"
     private let apiHashKey = "telegram.api-hash"
 
@@ -60,6 +65,8 @@ final class TelegramClient: ObservableObject {
         if let support = try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) {
             try? fm.removeItem(at: support.appendingPathComponent("TGSpeicher-TDLib", isDirectory: true))
         }
+        tdlibParametersInFlight = false
+        tdlibParametersConfigured = false
         accountName = "Telegram"
         savedMessagesChatID = nil
         authorizationStage = .apiCredentials
@@ -68,24 +75,42 @@ final class TelegramClient: ObservableObject {
     func setPhoneNumber(_ number: String) {
         let value = number.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
+        lastError = nil
         send([
             "@type": "setAuthenticationPhoneNumber",
             "phone_number": value,
             "settings": NSNull()
         ]) { [weak self] response in
-            self?.surfaceError(response)
+            guard let self else { return }
+            if response["@type"] as? String == "error" {
+                self.surfaceError(response)
+            } else {
+                self.lastError = nil
+            }
         }
     }
 
     func submitCode(_ code: String) {
+        lastError = nil
         send(["@type": "checkAuthenticationCode", "code": code.trimmingCharacters(in: .whitespacesAndNewlines)]) { [weak self] response in
-            self?.surfaceError(response)
+            guard let self else { return }
+            if response["@type"] as? String == "error" {
+                self.surfaceError(response)
+            } else {
+                self.lastError = nil
+            }
         }
     }
 
     func submitPassword(_ password: String) {
+        lastError = nil
         send(["@type": "checkAuthenticationPassword", "password": password]) { [weak self] response in
-            self?.surfaceError(response)
+            guard let self else { return }
+            if response["@type"] as? String == "error" {
+                self.surfaceError(response)
+            } else {
+                self.lastError = nil
+            }
         }
     }
 
@@ -143,6 +168,9 @@ final class TelegramClient: ObservableObject {
             return
         }
         authorizationStage = .connecting
+        tdlibParametersInFlight = false
+        tdlibParametersConfigured = false
+
         let id = td_create_client_id()
         clientID = id
         isReceiving = true
@@ -156,7 +184,10 @@ final class TelegramClient: ObservableObject {
         receiveQueue.async { [weak self] in
             self?.receiveLoop()
         }
-        send(["@type": "getAuthorizationState"])
+
+        // Do not call getAuthorizationState here. TDLib guarantees that authorization is driven
+        // through updateAuthorizationState; explicitly requesting it as well can cause the same
+        // authorizationStateWaitTdlibParameters state to be handled twice.
     }
 
     private func close() {
@@ -167,6 +198,8 @@ final class TelegramClient: ObservableObject {
             td_send(clientID, json)
         }
         self.clientID = nil
+        tdlibParametersInFlight = false
+        tdlibParametersConfigured = false
     }
 
     private func receiveLoop() {
@@ -220,38 +253,67 @@ final class TelegramClient: ObservableObject {
         switch type {
         case "authorizationStateWaitTdlibParameters":
             configureTDLib()
+
         case "authorizationStateWaitPhoneNumber":
+            tdlibParametersInFlight = false
+            tdlibParametersConfigured = true
+            DispatchQueue.main.async { self.lastError = nil }
             publish(stage: .phone)
+
         case "authorizationStateWaitCode":
-            var hint = "Enter the code Telegram sent to you."
+            tdlibParametersInFlight = false
+            tdlibParametersConfigured = true
+            DispatchQueue.main.async { self.lastError = nil }
+
+            var hint = "Enter the login code Telegram sent to you."
             if let codeInfo = state["code_info"] as? [String: Any],
                let codeType = codeInfo["type"] as? [String: Any],
                let codeTypeName = codeType["@type"] as? String {
-                if codeTypeName.contains("TelegramMessage") { hint = "Enter the code from your Telegram app." }
-                else if codeTypeName.contains("Sms") { hint = "Enter the SMS code from Telegram." }
-                else if codeTypeName.contains("Call") { hint = "Enter the code provided by the Telegram call." }
+                if codeTypeName.contains("TelegramMessage") {
+                    hint = "Telegram sent the login code as a private message. Open an already signed-in Telegram app and check the verified ‘Telegram’ service chat — this is not an SMS."
+                } else if codeTypeName.contains("Sms") {
+                    hint = "Telegram sent the login code by SMS to your phone number."
+                } else if codeTypeName.contains("Call") {
+                    hint = "Telegram will provide the login code by phone call."
+                } else if codeTypeName.contains("Email") {
+                    hint = "Telegram sent the login code to the email address linked to your account."
+                }
             }
             publish(stage: .code(hint: hint))
+
         case "authorizationStateWaitPassword":
+            DispatchQueue.main.async { self.lastError = nil }
             let hint = state["password_hint"] as? String ?? ""
             publish(stage: .password(hint: hint))
+
         case "authorizationStateReady":
+            tdlibParametersInFlight = false
+            tdlibParametersConfigured = true
+            DispatchQueue.main.async { self.lastError = nil }
             publish(stage: .ready)
             loadSelfAndSavedMessages()
+
         case "authorizationStateClosing", "authorizationStateLoggingOut":
             publish(stage: .connecting)
+
         case "authorizationStateClosed":
+            tdlibParametersInFlight = false
+            tdlibParametersConfigured = false
             publish(stage: .closed)
+
         case "authorizationStateWaitEmailAddress":
             publish(stage: .error("Telegram requires an email verification step for this login. This build currently supports phone code and 2FA password login."))
+
         case "authorizationStateWaitEmailCode":
             publish(stage: .error("Telegram requires an email verification code for this login. This build currently supports phone code and 2FA password login."))
+
         default:
             break
         }
     }
 
     private func configureTDLib() {
+        guard !tdlibParametersConfigured, !tdlibParametersInFlight else { return }
         guard let apiIDString = KeychainStore.get(apiIDKey),
               let apiID = Int(apiIDString),
               let apiHash = KeychainStore.get(apiHashKey) else {
@@ -285,8 +347,18 @@ final class TelegramClient: ObservableObject {
             "system_version": UIDevice.current.systemVersion,
             "application_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0",
         ]
+
+        tdlibParametersInFlight = true
         send(params) { [weak self] response in
-            self?.surfaceError(response)
+            guard let self else { return }
+            self.tdlibParametersInFlight = false
+            if response["@type"] as? String == "error" {
+                self.tdlibParametersConfigured = false
+                self.surfaceError(response)
+            } else {
+                self.tdlibParametersConfigured = true
+                self.lastError = nil
+            }
         }
     }
 
