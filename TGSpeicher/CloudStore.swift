@@ -27,33 +27,39 @@ final class CloudStore: ObservableObject {
     }
 
     func children(of folderID: UUID?) -> [CloudFolder] {
-        index.folders.filter { $0.parentID == folderID }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        index.folders
+            .filter { $0.parentID == folderID }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func files(in folderID: UUID?) -> [CloudFileEntry] {
-        index.files.filter { $0.folderID == folderID }.sorted { $0.createdAt > $1.createdAt }
+        index.files
+            .filter { $0.folderID == folderID }
+            .sorted { $0.createdAt > $1.createdAt }
     }
 
     func createFolder(name: String, parentID: UUID?) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
+
         let folder = CloudFolder(name: clean, parentID: parentID)
         index.folders.append(folder)
         persist()
 
-        let manifest = TGManifest(
-            format: 1,
-            kind: "folder",
-            fileID: nil,
-            folderID: folder.id,
-            parentFolderID: folder.parentID,
-            name: folder.name,
-            originalSize: nil,
-            chunkIndex: nil,
-            chunkCount: nil,
-            createdAt: folder.createdAt
+        sendMarkerMessage(
+            TGManifest(
+                format: 1,
+                kind: "folder",
+                fileID: nil,
+                folderID: folder.id,
+                parentFolderID: folder.parentID,
+                name: folder.name,
+                originalSize: nil,
+                chunkIndex: nil,
+                chunkCount: nil,
+                createdAt: folder.createdAt
+            )
         )
-        sendMarkerMessage(manifest)
     }
 
     func uploadFile(_ url: URL, folderID: UUID?) {
@@ -81,17 +87,24 @@ final class CloudStore: ObservableObject {
         let accessed = url.startAccessingSecurityScopedResource()
         ioQueue.async { [weak self] in
             guard let self else { return }
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+            }
+
             do {
-                // 1.9 GB keeps every chunk below Telegram's standard 2 GB per-file ceiling.
+                // Keep every part below Telegram's standard 2 GB per-file ceiling.
                 let maxChunkBytes: Int64 = 1_900_000_000
-                let chunks = try FileChunker.prepare(source: url, maxChunkBytes: maxChunkBytes) { completed, total in
+                let chunks = try FileChunker.prepare(
+                    source: url,
+                    maxChunkBytes: maxChunkBytes
+                ) { completed, total in
                     DispatchQueue.main.async {
                         self.upload?.completedBytes = completed
                         self.upload?.totalBytes = total
                         self.upload?.status = "Splitting securely…"
                     }
                 }
+
                 DispatchQueue.main.async {
                     self.upload?.completedBytes = 0
                     self.upload?.partCount = chunks.count
@@ -122,9 +135,9 @@ final class CloudStore: ObservableObject {
             return
         }
         guard !isRefreshing else { return }
+
         isRefreshing = true
-        var messages: [[String: Any]] = []
-        fetchMarkerPage(chatID: chatID, fromMessageID: 0, accumulated: &messages)
+        fetchMarkerPage(chatID: chatID, fromMessageID: 0, accumulated: [])
     }
 
     func downloadAndReassemble(_ file: CloudFileEntry) {
@@ -134,6 +147,7 @@ final class CloudStore: ObservableObject {
             lastError = "This file needs a Telegram index refresh before it can be downloaded."
             return
         }
+
         isDownloading = true
         downloadChunk(ordered, position: 0, localURLs: [], file: file)
     }
@@ -167,6 +181,7 @@ final class CloudStore: ObservableObject {
             UIApplication.shared.isIdleTimerDisabled = false
             return
         }
+
         guard let chatID = telegram.savedMessagesChatID else {
             failUpload("Saved Messages became unavailable.")
             return
@@ -174,7 +189,9 @@ final class CloudStore: ObservableObject {
 
         let chunk = chunks[position]
         upload?.currentPart = chunk.index
-        upload?.status = chunks.count == 1 ? "Uploading file…" : "Uploading part \(chunk.index) of \(chunk.count)…"
+        upload?.status = chunks.count == 1
+            ? "Uploading file…"
+            : "Uploading part \(chunk.index) of \(chunk.count)…"
 
         let manifest = TGManifest(
             format: 1,
@@ -188,16 +205,20 @@ final class CloudStore: ObservableObject {
             chunkCount: chunk.count,
             createdAt: Date()
         )
-        let caption = markerText(for: manifest)
-        let formatted: [String: Any] = ["@type": "formattedText", "text": caption, "entities": []]
+
         let content: [String: Any] = [
             "@type": "inputMessageDocument",
             "document": ["@type": "inputFileLocal", "path": chunk.url.path],
             "thumbnail": NSNull(),
             "disable_content_type_detection": true,
-            "caption": formatted
+            "caption": [
+                "@type": "formattedText",
+                "text": markerText(for: manifest),
+                "entities": []
+            ]
         ]
-        let request: [String: Any] = [
+
+        telegram.send([
             "@type": "sendMessage",
             "chat_id": chatID,
             "topic_id": NSNull(),
@@ -205,37 +226,44 @@ final class CloudStore: ObservableObject {
             "options": NSNull(),
             "reply_markup": NSNull(),
             "input_message_content": content
-        ]
-
-        telegram.send(request) { [weak self] response in
+        ]) { [weak self] response in
             guard let self else { return }
             if response["@type"] as? String == "error" {
                 self.failUpload(response["message"] as? String ?? "Telegram rejected the upload.")
                 return
             }
+
             let messageID = TelegramClient.int64(response["id"])
             var telegramFileID: Int?
             var remoteUniqueID: String?
-            if let content = response["content"] as? [String: Any],
-               let document = content["document"] as? [String: Any],
-               let file = document["document"] as? [String: Any] {
-                telegramFileID = TelegramClient.int(file["id"])
-                if let remote = file["remote"] as? [String: Any] {
+
+            if let messageContent = response["content"] as? [String: Any],
+               let document = messageContent["document"] as? [String: Any],
+               let telegramFile = document["document"] as? [String: Any] {
+                telegramFileID = TelegramClient.int(telegramFile["id"])
+                if let remote = telegramFile["remote"] as? [String: Any] {
                     remoteUniqueID = remote["unique_id"] as? String
                 }
             }
-            var next = collected
-            next.append(CloudChunk(
-                index: chunk.index,
-                count: chunk.count,
-                telegramMessageID: messageID,
-                telegramFileID: telegramFileID,
-                remoteUniqueID: remoteUniqueID,
-                size: chunk.size,
-                storedName: chunk.url.lastPathComponent
-            ))
-            let completed = next.reduce(Int64(0)) { $0 + $1.size }
-            self.upload?.completedBytes = min(originalSize, completed)
+
+            var nextCollected = collected
+            nextCollected.append(
+                CloudChunk(
+                    index: chunk.index,
+                    count: chunk.count,
+                    telegramMessageID: messageID,
+                    telegramFileID: telegramFileID,
+                    remoteUniqueID: remoteUniqueID,
+                    size: chunk.size,
+                    storedName: chunk.url.lastPathComponent
+                )
+            )
+
+            self.upload?.completedBytes = min(
+                originalSize,
+                nextCollected.reduce(Int64(0)) { $0 + $1.size }
+            )
+
             self.sendPreparedChunks(
                 chunks,
                 position: position + 1,
@@ -243,7 +271,7 @@ final class CloudStore: ObservableObject {
                 originalName: originalName,
                 originalSize: originalSize,
                 folderID: folderID,
-                collected: next
+                collected: nextCollected
             )
         }
     }
@@ -256,13 +284,17 @@ final class CloudStore: ObservableObject {
 
     private func sendMarkerMessage(_ manifest: TGManifest) {
         guard let chatID = telegram.savedMessagesChatID else { return }
-        let text = markerText(for: manifest)
         let content: [String: Any] = [
             "@type": "inputMessageText",
-            "text": ["@type": "formattedText", "text": text, "entities": []],
+            "text": [
+                "@type": "formattedText",
+                "text": markerText(for: manifest),
+                "entities": []
+            ],
             "link_preview_options": NSNull(),
             "clear_draft": false
         ]
+
         telegram.send([
             "@type": "sendMessage",
             "chat_id": chatID,
@@ -279,21 +311,29 @@ final class CloudStore: ObservableObject {
     private func markerText(for manifest: TGManifest) -> String {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(manifest) else { return TGManifest.marker }
+        guard let data = try? encoder.encode(manifest) else {
+            return TGManifest.marker
+        }
         return "\(TGManifest.marker) \(data.base64EncodedString())"
     }
 
     private func decodeManifest(from text: String) -> TGManifest? {
         guard let range = text.range(of: TGManifest.marker) else { return nil }
-        let tail = text[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = Data(base64Encoded: tail) else { return nil }
+        let payload = text[range.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = Data(base64Encoded: payload) else { return nil }
+
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try? decoder.decode(TGManifest.self, from: data)
     }
 
-    private func fetchMarkerPage(chatID: Int64, fromMessageID: Int64, accumulated: inout [[String: Any]]) {
-        let request: [String: Any] = [
+    private func fetchMarkerPage(
+        chatID: Int64,
+        fromMessageID: Int64,
+        accumulated: [[String: Any]]
+    ) {
+        telegram.send([
             "@type": "searchChatMessages",
             "chat_id": chatID,
             "topic_id": NSNull(),
@@ -303,22 +343,28 @@ final class CloudStore: ObservableObject {
             "offset": 0,
             "limit": 100,
             "filter": NSNull()
-        ]
-        telegram.send(request) { [weak self] response in
+        ]) { [weak self] response in
             guard let self else { return }
             if response["@type"] as? String == "error" {
                 self.isRefreshing = false
                 self.surfaceTelegramError(response)
                 return
             }
+
+            var nextAccumulated = accumulated
             if let page = response["messages"] as? [[String: Any]] {
-                accumulated.append(contentsOf: page)
+                nextAccumulated.append(contentsOf: page)
             }
-            let next = TelegramClient.int64(response["next_from_message_id"]) ?? 0
-            if next != 0, accumulated.count < 20_000 {
-                self.fetchMarkerPage(chatID: chatID, fromMessageID: next, accumulated: &accumulated)
+
+            let nextMessageID = TelegramClient.int64(response["next_from_message_id"]) ?? 0
+            if nextMessageID != 0, nextAccumulated.count < 20_000 {
+                self.fetchMarkerPage(
+                    chatID: chatID,
+                    fromMessageID: nextMessageID,
+                    accumulated: nextAccumulated
+                )
             } else {
-                self.rebuildIndex(from: accumulated)
+                self.rebuildIndex(from: nextAccumulated)
                 self.isRefreshing = false
             }
         }
@@ -326,6 +372,7 @@ final class CloudStore: ObservableObject {
 
     private func rebuildIndex(from messages: [[String: Any]]) {
         var foldersByID: [UUID: CloudFolder] = [:]
+
         struct TempFile {
             var name: String
             var folderID: UUID?
@@ -334,10 +381,12 @@ final class CloudStore: ObservableObject {
             var chunks: [CloudChunk]
             var mimeType: String?
         }
+
         var filesByID: [UUID: TempFile] = [:]
 
         for message in messages {
             guard let content = message["content"] as? [String: Any] else { continue }
+
             var marker: String?
             if content["@type"] as? String == "messageText",
                let text = content["text"] as? [String: Any] {
@@ -346,6 +395,7 @@ final class CloudStore: ObservableObject {
                       let caption = content["caption"] as? [String: Any] {
                 marker = caption["text"] as? String
             }
+
             guard let marker, let manifest = decodeManifest(from: marker) else { continue }
 
             if manifest.kind == "folder", let folderID = manifest.folderID {
@@ -359,6 +409,7 @@ final class CloudStore: ObservableObject {
             }
 
             guard manifest.kind == "fileChunk", let fileID = manifest.fileID else { continue }
+
             let messageID = TelegramClient.int64(message["id"])
             var telegramFileID: Int?
             var uniqueID: String?
@@ -369,14 +420,17 @@ final class CloudStore: ObservableObject {
             if let document = content["document"] as? [String: Any] {
                 storedName = document["file_name"] as? String ?? storedName
                 mimeType = document["mime_type"] as? String
-                if let file = document["document"] as? [String: Any] {
-                    telegramFileID = TelegramClient.int(file["id"])
-                    size = TelegramClient.int64(file["size"]) ?? TelegramClient.int64(file["expected_size"]) ?? 0
-                    if let remote = file["remote"] as? [String: Any] {
+                if let telegramFile = document["document"] as? [String: Any] {
+                    telegramFileID = TelegramClient.int(telegramFile["id"])
+                    size = TelegramClient.int64(telegramFile["size"])
+                        ?? TelegramClient.int64(telegramFile["expected_size"])
+                        ?? 0
+                    if let remote = telegramFile["remote"] as? [String: Any] {
                         uniqueID = remote["unique_id"] as? String
                     }
                 }
             }
+
             let part = manifest.chunkIndex ?? 1
             let count = manifest.chunkCount ?? 1
             let cloudChunk = CloudChunk(
@@ -388,6 +442,7 @@ final class CloudStore: ObservableObject {
                 size: size,
                 storedName: storedName
             )
+
             var temp = filesByID[fileID] ?? TempFile(
                 name: manifest.name,
                 folderID: manifest.folderID,
@@ -408,7 +463,9 @@ final class CloudStore: ObservableObject {
                 id: id,
                 name: temp.name,
                 folderID: temp.folderID,
-                totalSize: temp.totalSize > 0 ? temp.totalSize : temp.chunks.reduce(0) { $0 + $1.size },
+                totalSize: temp.totalSize > 0
+                    ? temp.totalSize
+                    : temp.chunks.reduce(Int64(0)) { $0 + $1.size },
                 createdAt: temp.createdAt,
                 chunks: temp.chunks.sorted { $0.index < $1.index },
                 mimeType: temp.mimeType
@@ -417,7 +474,12 @@ final class CloudStore: ObservableObject {
         persist()
     }
 
-    private func downloadChunk(_ chunks: [CloudChunk], position: Int, localURLs: [URL], file: CloudFileEntry) {
+    private func downloadChunk(
+        _ chunks: [CloudChunk],
+        position: Int,
+        localURLs: [URL],
+        file: CloudFileEntry
+    ) {
         guard position < chunks.count else {
             assembleDownloadedChunks(localURLs, file: file)
             return
@@ -427,6 +489,7 @@ final class CloudStore: ObservableObject {
             lastError = "A Telegram file identifier is missing. Refresh the cloud index and try again."
             return
         }
+
         telegram.send([
             "@type": "downloadFile",
             "file_id": fileID,
@@ -441,16 +504,24 @@ final class CloudStore: ObservableObject {
                 self.surfaceTelegramError(response)
                 return
             }
+
             guard let local = response["local"] as? [String: Any],
                   local["is_downloading_completed"] as? Bool == true,
-                  let path = local["path"] as? String, !path.isEmpty else {
+                  let path = local["path"] as? String,
+                  !path.isEmpty else {
                 self.isDownloading = false
                 self.lastError = "Telegram did not provide a completed local file."
                 return
             }
-            var urls = localURLs
-            urls.append(URL(fileURLWithPath: path))
-            self.downloadChunk(chunks, position: position + 1, localURLs: urls, file: file)
+
+            var nextURLs = localURLs
+            nextURLs.append(URL(fileURLWithPath: path))
+            self.downloadChunk(
+                chunks,
+                position: position + 1,
+                localURLs: nextURLs,
+                file: file
+            )
         }
     }
 
@@ -458,10 +529,14 @@ final class CloudStore: ObservableObject {
         let destination = FileManager.default.temporaryDirectory
             .appendingPathComponent("TGSpeicherExports", isDirectory: true)
             .appendingPathComponent(file.name)
+
         ioQueue.async { [weak self] in
             guard let self else { return }
             do {
-                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
                 try FileChunker.join(chunks: chunks, destination: destination) { _ in }
                 DispatchQueue.main.async {
                     self.lastExportURL = destination
@@ -478,11 +553,18 @@ final class CloudStore: ObservableObject {
 
     private func surfaceTelegramError(_ response: [String: Any]) {
         guard response["@type"] as? String == "error" else { return }
-        lastError = (response["message"] as? String ?? "Telegram returned an error.").replacingOccurrences(of: "_", with: " ")
+        lastError = (response["message"] as? String ?? "Telegram returned an error.")
+            .replacingOccurrences(of: "_", with: " ")
     }
 
     private var localIndexURL: URL? {
-        guard let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else { return nil }
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) else { return nil }
+
         let folder = support.appendingPathComponent("TGSpeicher", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder.appendingPathComponent("cloud-index.json")
@@ -491,12 +573,15 @@ final class CloudStore: ObservableObject {
     private func loadLocalIndex() {
         guard let url = localIndexURL,
               let data = try? Data(contentsOf: url),
-              let value = try? JSONDecoder().decode(CloudIndex.self, from: data) else { return }
+              let value = try? JSONDecoder().decode(CloudIndex.self, from: data) else {
+            return
+        }
         index = value
     }
 
     private func persist() {
-        guard let url = localIndexURL, let data = try? JSONEncoder().encode(index) else { return }
+        guard let url = localIndexURL,
+              let data = try? JSONEncoder().encode(index) else { return }
         try? data.write(to: url, options: [.atomic])
         objectWillChange.send()
     }
