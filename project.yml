@@ -22,10 +22,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: eu.simplexsmp.tgspeicher
         PRODUCT_NAME: TGSpeicher
         SWIFT_VERSION: 5.0
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_FILE: TGSpeicher/Info.plist
-        CURRENT_PROJECT_VERSION: 6
-        MARKETING_VERSION: 1.1.2
+        CURRENT_PROJECT_VERSION: 20
+        MARKETING_VERSION: 2.0.0
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
     scheme:

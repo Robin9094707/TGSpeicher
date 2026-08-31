@@ -1,5 +1,48 @@
-# TGSpeicher
+# TGSpeicher 2.0 — native Telegram Drive for iOS
 
-TGSpeicher is a native iPhone Telegram cloud-drive client built with SwiftUI and TDLib. It connects directly to Telegram from the device, uses Saved Messages as the storage target, supports virtual folders and streaming chunk uploads for files larger than Telegram's per-file limit, and requires no custom backend.
+TGSpeicher is a native SwiftUI Telegram cloud-drive client for iPhone and iPad. Version 2.0 keeps the proven direct TDLib connection and Telegram catalog format from the earlier app, then rebuilds the mobile experience around a faster file manager and modern iOS design.
 
-> Status: active development. Build artifacts are produced by GitHub Actions as an unsigned IPA intended for personal sideloading/resigning.
+## Highlights
+
+- Native SwiftUI interface with Liquid Glass on iOS 26+ and a Material fallback on iOS 17–25.
+- Direct Telegram login with phone code, QR login, 2FA and email verification through TDLib.
+- Telegram **Saved Messages** as storage — no separate TGSpeicher backend required.
+- Nested virtual folders, rename/move/delete, tags and a Telegram-synced recovery catalog.
+- List + grid layouts, search by filename/tag, sorting by date/name/size and multi-selection.
+- Durable multi-file upload queue that survives app restarts and serializes Telegram uploads safely.
+- Remote URL import for direct HTTP/HTTPS downloads followed by upload to Telegram.
+- Chunked uploads for large files, SHA-256 verification, reassembly and recovery after reinstall.
+- QuickLook preview after download, Share Sheet export and Apple Files integration.
+- Local Downloads browser and storage cleanup.
+- Transfer status, connection state, Wi-Fi/cellular awareness, background task handoff and optional local completion notifications.
+- Telegram proxy configuration (SOCKS5, HTTP and MTProto) stored with secrets in Keychain.
+- iPhone + iPad support.
+
+## Mobile-first scope
+
+The upstream Telegram Drive project also has desktop/server-oriented features such as WebDAV/REST serving and continuous folder sync. iOS does not allow an ordinary sideloaded app to keep arbitrary server processes or filesystem watchers alive indefinitely in the background, so TGSpeicher 2.0 focuses on the mobile equivalents that work reliably under iOS lifecycle rules.
+
+The iOS client is a clean native implementation. It does not embed a Tauri desktop runtime or copy the desktop UI into a WebView.
+
+## Build an IPA
+
+Every push to `main` runs `.github/workflows/build-ipa.yml` on a GitHub-hosted macOS runner. The workflow:
+
+1. Generates the Xcode project with XcodeGen.
+2. Resolves the pinned `TDLibFramework` Swift package.
+3. Builds a Release app for a generic iOS device with code signing disabled.
+4. Packages `Payload/TGSpeicher.app` as `TGSpeicher-v2.0.0-unsigned.ipa`.
+5. Uploads the IPA as a GitHub Actions artifact.
+
+The artifact is intentionally **unsigned**. A sideload tool/signing service must sign it for your Apple ID or certificate before installation.
+
+## Telegram API credentials
+
+On first launch, enter the API ID and API hash created for your own Telegram application. TGSpeicher stores them locally in the iOS Keychain and connects directly to Telegram.
+
+## Compatibility
+
+- Deployment target: iOS 17+
+- Liquid Glass enhancements: iOS 26+
+- Devices: iPhone and iPad
+- Storage engine: TDLib + Telegram Saved Messages

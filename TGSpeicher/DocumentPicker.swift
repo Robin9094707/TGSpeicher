@@ -3,8 +3,19 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct TGDocumentPicker: UIViewControllerRepresentable {
+    let allowsMultipleSelection: Bool
     let onPicked: ([URL]) -> Void
     let onCancel: () -> Void
+
+    init(
+        allowsMultipleSelection: Bool = false,
+        onPicked: @escaping ([URL]) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.allowsMultipleSelection = allowsMultipleSelection
+        self.onPicked = onPicked
+        self.onCancel = onCancel
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onPicked: onPicked, onCancel: onCancel)
@@ -16,7 +27,7 @@ struct TGDocumentPicker: UIViewControllerRepresentable {
             asCopy: true
         )
         picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = false
+        picker.allowsMultipleSelection = allowsMultipleSelection
         picker.shouldShowFileExtensions = true
         picker.modalPresentationStyle = .pageSheet
         return picker

@@ -43,7 +43,7 @@ jobs:
             -project TGSpeicher.xcodeproj \
             -scheme TGSpeicher
 
-      - name: Build for iPhone
+      - name: Build for iPhone and iPad
         run: |
           set -o pipefail
           xcodebuild \
@@ -62,18 +62,20 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="build/Build/Products/Release-iphoneos/TGSpeicher.app"
+          IPA_NAME="TGSpeicher-v2.0.0-unsigned.ipa"
           test -d "$APP_PATH"
           rm -rf Payload
           mkdir Payload
           cp -R "$APP_PATH" Payload/TGSpeicher.app
-          ditto -c -k --sequesterRsrc --keepParent Payload TGSpeicher-v1.1.2-unsigned.ipa
-          ls -lh TGSpeicher-v1.1.2-unsigned.ipa
+          ditto -c -k --sequesterRsrc --keepParent Payload "$IPA_NAME"
+          unzip -t "$IPA_NAME"
+          ls -lh "$IPA_NAME"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v1.1.2-unsigned-IPA
-          path: TGSpeicher-v1.1.2-unsigned.ipa
+          name: TGSpeicher-v2.0.0-unsigned-IPA
+          path: TGSpeicher-v2.0.0-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
 
@@ -81,7 +83,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v1.1.2-build-log
+          name: TGSpeicher-v2.0.0-build-log
           path: xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
