@@ -7,7 +7,7 @@ options:
 packages:
   TDLibFramework:
     url: https://github.com/Swiftgram/TDLibFramework
-    branch: main
+    revision: 52d0d624cd5b01db0558c9dec3e07148c62ac205
 targets:
   TGSpeicher:
     type: application
@@ -24,8 +24,8 @@ targets:
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1"
         INFOPLIST_FILE: TGSpeicher/Info.plist
-        CURRENT_PROJECT_VERSION: 5
-        MARKETING_VERSION: 1.1.1
+        CURRENT_PROJECT_VERSION: 6
+        MARKETING_VERSION: 1.1.2
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
     scheme:
