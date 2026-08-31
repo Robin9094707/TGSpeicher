@@ -15,6 +15,11 @@ struct TGSpeicherApp: App {
         WindowGroup {
             RootView(telegram: telegram, cloud: cloud)
                 .tint(.blue)
+                .overlay(alignment: .bottomTrailing) {
+                    EmergencyDebugOverlay(telegram: telegram)
+                        .padding(.trailing, 16)
+                        .padding(.bottom, 86)
+                }
         }
     }
 }
