@@ -28,6 +28,26 @@ struct QuickLookPreview: UIViewControllerRepresentable {
     }
 }
 
+struct QuickLookPreviewSheet: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            QuickLookPreview(url: url)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle(url.lastPathComponent)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { dismiss() } label: { Image(systemName: "xmark.circle.fill") }
+                            .accessibilityLabel("Close preview")
+                    }
+                }
+        }
+    }
+}
+
 enum TGLocalDownloads {
     static var folderURL: URL? {
         guard let documents = try? FileManager.default.url(
@@ -102,9 +122,9 @@ struct LocalDownloadsView: View {
                         Button {
                             previewURL = url
                         } label: {
-                            HStack(spacing: 12) {
+                            HStack(spacing: 10) {
                                 Image(systemName: "doc.fill").foregroundStyle(.blue)
-                                VStack(alignment: .leading, spacing: 3) {
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(url.lastPathComponent).foregroundStyle(.primary).lineLimit(1)
                                     Text(url.fileByteSize.byteCountString).font(.caption).foregroundStyle(.secondary)
                                 }
@@ -139,14 +159,7 @@ struct LocalDownloadsView: View {
             get: { previewURL != nil },
             set: { if !$0 { previewURL = nil } }
         )) {
-            if let previewURL {
-                NavigationStack {
-                    QuickLookPreview(url: previewURL)
-                        .ignoresSafeArea()
-                        .navigationTitle(previewURL.lastPathComponent)
-                        .navigationBarTitleDisplayMode(.inline)
-                }
-            }
+            if let previewURL { QuickLookPreviewSheet(url: previewURL) }
         }
         .confirmationDialog("Delete every offline download?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Clear Downloads", role: .destructive) {
@@ -159,4 +172,3 @@ struct LocalDownloadsView: View {
 
     private func reload() { files = TGLocalDownloads.allFiles() }
 }
-
