@@ -44,7 +44,7 @@ struct FileDetailV2: View {
                                 previewAfterDownload = false
                                 cloud.downloadAndReassemble(file)
                             }
-                            .buttonStyle(file.isTGImage || file.isTGVideo ? .bordered : .borderedProminent)
+                            .buttonStyle(.bordered)
                             .disabled(cloud.isDownloading)
 
                             if localURL != nil {
