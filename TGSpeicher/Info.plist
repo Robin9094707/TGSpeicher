@@ -22,6 +22,10 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>TGSpeicher needs access to your Photos library to back up your photos, videos and Live Photo resources to your own Telegram cloud and to optionally remove fully backed-up originals when you explicitly request it.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>TGSpeicher may use Photos access when managing media you explicitly choose to restore or manage.</string>
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
