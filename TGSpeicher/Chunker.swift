@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 enum ChunkerError: LocalizedError {
     case invalidFile
@@ -17,6 +18,13 @@ struct PreparedChunk {
     let index: Int
     let count: Int
     let size: Int64
+    let sha256: String
+}
+
+struct PreparedFile {
+    let chunks: [PreparedChunk]
+    let totalSize: Int64
+    let sha256: String
 }
 
 enum FileChunker {
@@ -24,7 +32,7 @@ enum FileChunker {
         source: URL,
         maxChunkBytes: Int64,
         progress: @escaping (Int64, Int64) -> Void
-    ) throws -> [PreparedChunk] {
+    ) throws -> PreparedFile {
         guard maxChunkBytes > 0 else { throw ChunkerError.invalidFile }
         let totalSize = source.fileByteSize
         guard totalSize >= 0 else { throw ChunkerError.invalidFile }
@@ -40,6 +48,7 @@ enum FileChunker {
 
         var completed: Int64 = 0
         var output: [PreparedChunk] = []
+        var fileHasher = SHA256()
         let bufferSize = 4 * 1024 * 1024
 
         for part in 0..<count {
@@ -48,7 +57,9 @@ enum FileChunker {
             guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
                 throw ChunkerError.cannotCreateOutput
             }
+
             let writer = try FileHandle(forWritingTo: destination)
+            var chunkHasher = SHA256()
             var written: Int64 = 0
             let target = min(maxChunkBytes, max(0, totalSize - Int64(part) * maxChunkBytes))
 
@@ -57,15 +68,26 @@ enum FileChunker {
                 let request = Int(min(Int64(bufferSize), remaining))
                 guard let data = try reader.read(upToCount: request), !data.isEmpty else { break }
                 try writer.write(contentsOf: data)
+                chunkHasher.update(data: data)
+                fileHasher.update(data: data)
                 written += Int64(data.count)
                 completed += Int64(data.count)
                 progress(completed, totalSize)
             }
             try writer.close()
-            output.append(PreparedChunk(url: destination, index: part + 1, count: count, size: written))
+
+            output.append(
+                PreparedChunk(
+                    url: destination,
+                    index: part + 1,
+                    count: count,
+                    size: written,
+                    sha256: hex(chunkHasher.finalize())
+                )
+            )
         }
 
-        return output
+        return PreparedFile(chunks: output, totalSize: totalSize, sha256: hex(fileHasher.finalize()))
     }
 
     static func cleanup(_ chunks: [PreparedChunk]) {
@@ -80,6 +102,7 @@ enum FileChunker {
         guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
             throw ChunkerError.cannotCreateOutput
         }
+
         let writer = try FileHandle(forWritingTo: destination)
         defer { try? writer.close() }
         var completed: Int64 = 0
@@ -93,5 +116,19 @@ enum FileChunker {
                 progress(completed)
             }
         }
+    }
+
+    static func sha256(of url: URL) throws -> String {
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        var hasher = SHA256()
+        while let data = try reader.read(upToCount: 4 * 1024 * 1024), !data.isEmpty {
+            hasher.update(data: data)
+        }
+        return hex(hasher.finalize())
+    }
+
+    private static func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 {
+        digest.map { String(format: "%02x", $0) }.joined()
     }
 }

@@ -5,492 +5,537 @@ import TDLibFramework
 
 final class TelegramClient: ObservableObject {
     @Published private(set) var authorizationStage: AuthorizationStage = .connecting
-    @Published private(set) var accountName: String = "Telegram"
+    @Published private(set) var accountName = "Telegram"
     @Published private(set) var savedMessagesChatID: Int64?
+    @Published private(set) var loginCodeInfo: LoginCodeInfo?
     @Published private(set) var debugLines: [String] = []
-    @Published private(set) var lastAuthorizationStateName: String = "Not started"
+    @Published private(set) var lastAuthorizationStateName = "Not started"
     @Published private(set) var lastActivityAt: Date?
+    @Published private(set) var isAuthActionInFlight = false
     @Published var lastError: String?
-
-    private var clientID: Int32?
-    private var isReceiving = false
-    private var callbacks: [String: ([String: Any]) -> Void] = [:]
-    private var observers: [UUID: ([String: Any]) -> Void] = [:]
-    private let lock = NSLock()
-    private let receiveQueue = DispatchQueue(label: "eu.simplexsmp.tgspeicher.tdlib.receive", qos: .userInitiated)
-
-    // TDLib drives authorization through updateAuthorizationState. These guards ensure
-    // setTdlibParameters can never be submitted twice for the same client lifecycle.
-    private var tdlibParametersInFlight = false
-    private var tdlibParametersConfigured = false
-    private var startGeneration = UUID()
 
     private let apiIDKey = "telegram.api-id"
     private let apiHashKey = "telegram.api-hash"
+
+    private var clientID: Int32?
+    private let clientLock = NSLock()
+    private let callbackLock = NSLock()
+    private let receiverLock = NSLock()
+    private let receiveQueue = DispatchQueue(label: "eu.simplexsmp.tgspeicher.tdlib.receive", qos: .userInitiated)
+
+    private var callbacks: [String: ([String: Any]) -> Void] = [:]
+    private var observers: [UUID: ([String: Any]) -> Void] = [:]
+    private var finalMessageCallbacks: [Int64: ([String: Any]) -> Void] = [:]
+    private var earlyFinalMessages: [Int64: [String: Any]] = [:]
+
+    private var receiverRunning = false
+    private var receiverShouldStop = false
+    private var tdlibParametersInFlight = false
+    private var tdlibParametersConfigured = false
+    private var startGeneration = UUID()
 
     var hasAPICredentials: Bool {
         KeychainStore.get(apiIDKey) != nil && KeychainStore.get(apiHashKey) != nil
     }
 
-    var debugText: String {
-        debugLines.joined(separator: "\n")
-    }
+    var debugText: String { debugLines.joined(separator: "\n") }
+    var clientDescription: String { activeClientID.map { "Client \($0)" } ?? "No active client" }
 
-    var clientDescription: String {
-        if let clientID { return "Client \(clientID)" }
-        return "No active client"
+    private var activeClientID: Int32? {
+        clientLock.lock(); defer { clientLock.unlock() }
+        return clientID
     }
 
     init() {
-        appendDebug("TGSpeicher \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") started")
+        debug("TGSpeicher \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") started")
         if hasAPICredentials {
-            appendDebug("API credentials found in local Keychain")
+            debug("API credentials found in local Keychain")
             start()
         } else {
-            appendDebug("No API credentials stored")
             authorizationStage = .apiCredentials
+            debug("No API credentials stored")
         }
     }
 
     deinit {
-        close()
+        receiverLock.lock(); receiverShouldStop = true; receiverLock.unlock()
+        closeClient()
     }
 
+    // MARK: Credentials / lifecycle
+
     func saveAPICredentials(apiIDText: String, apiHash: String) {
-        let trimmedHash = apiHash.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let apiID = Int(apiIDText.trimmingCharacters(in: .whitespacesAndNewlines)), apiID > 0 else {
+        let hash = apiHash.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let id = Int(apiIDText.trimmingCharacters(in: .whitespacesAndNewlines)), id > 0 else {
             lastError = "Please enter a valid Telegram API ID."
             return
         }
-        guard trimmedHash.count >= 16 else {
-            lastError = "Please enter your Telegram API hash from my.telegram.org."
+        guard hash.count >= 16 else {
+            lastError = "Please enter the API hash from my.telegram.org."
             return
         }
-
-        appendDebug("Saving API credentials to this-device-only Keychain")
-        KeychainStore.set(String(apiID), for: apiIDKey)
-        KeychainStore.set(trimmedHash, for: apiHashKey)
+        KeychainStore.set(String(id), for: apiIDKey)
+        KeychainStore.set(hash, for: apiHashKey)
         lastError = nil
+        debug("Saved Telegram API credentials")
         start()
     }
 
-    /// Removes everything TGSpeicher stores for the Telegram login on this device.
-    /// This does not delete anything from the Telegram cloud itself.
     func resetAPICredentials() {
-        appendDebug("LOCAL RESET requested")
-        close()
-
+        debug("LOCAL RESET requested")
+        closeClient()
         KeychainStore.delete(apiIDKey)
         KeychainStore.delete(apiHashKey)
         KeychainStore.delete("tdlib.database-key")
 
         let fm = FileManager.default
-        if let support = try? fm.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ) {
+        if let support = try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) {
             try? fm.removeItem(at: support.appendingPathComponent("TGSpeicher-TDLib", isDirectory: true))
         }
+        try? fm.removeItem(at: fm.temporaryDirectory.appendingPathComponent("TGSpeicherChunks", isDirectory: true))
+        try? fm.removeItem(at: fm.temporaryDirectory.appendingPathComponent("TGSpeicherExports", isDirectory: true))
 
-        let temporary = fm.temporaryDirectory
-        try? fm.removeItem(at: temporary.appendingPathComponent("TGSpeicherChunks", isDirectory: true))
-        try? fm.removeItem(at: temporary.appendingPathComponent("TGSpeicherExports", isDirectory: true))
-
-        tdlibParametersInFlight = false
-        tdlibParametersConfigured = false
         accountName = "Telegram"
         savedMessagesChatID = nil
+        loginCodeInfo = nil
         lastError = nil
         lastAuthorizationStateName = "Reset"
+        isAuthActionInFlight = false
         authorizationStage = .apiCredentials
-        appendDebug("Local Telegram session, API credentials and database key deleted")
+        debug("Local Telegram login data deleted")
     }
 
     func retryConnection() {
-        guard hasAPICredentials else {
-            appendDebug("Retry requested without API credentials")
-            authorizationStage = .apiCredentials
-            return
-        }
-
-        appendDebug("Manual connection retry requested")
-        close()
+        guard hasAPICredentials else { authorizationStage = .apiCredentials; return }
+        closeClient()
         let generation = UUID()
         startGeneration = generation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+        debug("Manual connection retry")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self, self.startGeneration == generation else { return }
             self.start()
         }
     }
 
-    func setPhoneNumber(_ number: String) {
-        let value = number.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
+    private func start() {
+        guard activeClientID == nil else { return }
+        guard hasAPICredentials else { authorizationStage = .apiCredentials; return }
+
+        authorizationStage = .connecting
+        loginCodeInfo = nil
         lastError = nil
-        appendDebug("Submitting phone number to TDLib")
+        isAuthActionInFlight = false
+        tdlibParametersInFlight = false
+        tdlibParametersConfigured = false
+        lastAuthorizationStateName = "Starting"
+
+        let generation = UUID()
+        startGeneration = generation
+        let id = td_create_client_id()
+        clientLock.lock(); clientID = id; clientLock.unlock()
+        debug("Created TDLib client \(id)")
+        startReceiverIfNeeded()
+
+        let log: [String: Any] = ["@type": "setLogVerbosityLevel", "new_verbosity_level": 1]
+        if let data = try? JSONSerialization.data(withJSONObject: log), let json = String(data: data, encoding: .utf8) {
+            _ = td_execute(json)
+        }
+
+        // The simplified TDLib client becomes active only after its first td_send.
+        send(["@type": "getOption", "name": "version"]) { [weak self] response in
+            guard let self else { return }
+            if response["@type"] as? String == "error" { self.surfaceError(response) }
+            else { self.debug("TDLib bootstrap completed") }
+        }
+        scheduleStartupWatchdog(clientID: id, generation: generation)
+    }
+
+    private func closeClient() {
+        guard let id = activeClientID else { return }
+        debug("Closing TDLib client \(id)")
+        if let data = try? JSONSerialization.data(withJSONObject: ["@type": "close"]), let json = String(data: data, encoding: .utf8) {
+            td_send(id, json)
+        }
+        clientLock.lock(); clientID = nil; clientLock.unlock()
+        tdlibParametersInFlight = false
+        tdlibParametersConfigured = false
+        loginCodeInfo = nil
+
+        callbackLock.lock()
+        callbacks.removeAll()
+        finalMessageCallbacks.removeAll()
+        earlyFinalMessages.removeAll()
+        callbackLock.unlock()
+    }
+
+    // MARK: Authorization
+
+    func setPhoneNumber(_ number: String) {
+        let clean = number.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        guard case .phone = authorizationStage else {
+            debug("Duplicate phone-code request blocked")
+            lastError = "A login-code transaction is already active. Use the current code instead of requesting another one."
+            return
+        }
+        guard !isAuthActionInFlight else { return }
+
+        isAuthActionInFlight = true
+        lastError = nil
+        debug("Submitting phone number exactly once")
         send([
             "@type": "setAuthenticationPhoneNumber",
-            "phone_number": value,
+            "phone_number": clean,
             "settings": NSNull()
         ]) { [weak self] response in
             guard let self else { return }
-            if response["@type"] as? String == "error" {
-                self.surfaceError(response)
-            } else {
-                self.lastError = nil
-                self.appendDebug("Phone number accepted by TDLib")
-            }
+            self.isAuthActionInFlight = false
+            if response["@type"] as? String == "error" { self.surfaceError(response) }
+        }
+    }
+
+    func requestQRLogin() {
+        guard !isAuthActionInFlight else { return }
+        isAuthActionInFlight = true
+        lastError = nil
+        debug("Requesting QR login")
+        send(["@type": "requestQrCodeAuthentication", "other_user_ids": []]) { [weak self] response in
+            guard let self else { return }
+            self.isAuthActionInFlight = false
+            if response["@type"] as? String == "error" { self.surfaceError(response) }
+        }
+    }
+
+    func resendAuthenticationCode() {
+        guard case .code = authorizationStage, let info = loginCodeInfo else { return }
+        guard info.nextDeliveryType != nil else {
+            lastError = "Telegram did not offer another delivery method. Use the newest code from Telegram."
+            return
+        }
+        guard info.canResend else {
+            lastError = "Telegram allows another code in \(info.remainingSeconds) seconds."
+            return
+        }
+        guard !isAuthActionInFlight else { return }
+
+        isAuthActionInFlight = true
+        lastError = nil
+        debug("Resending code after Telegram timeout")
+        send([
+            "@type": "resendAuthenticationCode",
+            "reason": ["@type": "resendCodeReasonUserRequest"]
+        ]) { [weak self] response in
+            guard let self else { return }
+            self.isAuthActionInFlight = false
+            if response["@type"] as? String == "error" { self.surfaceError(response) }
         }
     }
 
     func submitCode(_ code: String) {
-        lastError = nil
-        appendDebug("Submitting verification code")
-        send([
-            "@type": "checkAuthenticationCode",
-            "code": code.trimmingCharacters(in: .whitespacesAndNewlines)
-        ]) { [weak self] response in
-            guard let self else { return }
-            if response["@type"] as? String == "error" {
-                self.surfaceError(response)
-            } else {
-                self.lastError = nil
-                self.appendDebug("Verification code accepted")
-            }
-        }
+        performAuthRequest(["@type": "checkAuthenticationCode", "code": code.trimmingCharacters(in: .whitespacesAndNewlines)], label: "verification code")
     }
 
     func submitPassword(_ password: String) {
+        performAuthRequest(["@type": "checkAuthenticationPassword", "password": password], label: "2FA password")
+    }
+
+    func submitEmailAddress(_ email: String) {
+        performAuthRequest(["@type": "setAuthenticationEmailAddress", "email_address": email.trimmingCharacters(in: .whitespacesAndNewlines)], label: "email address")
+    }
+
+    func submitEmailCode(_ code: String) {
+        performAuthRequest([
+            "@type": "checkAuthenticationEmailCode",
+            "code": ["@type": "emailAddressAuthenticationCode", "code": code.trimmingCharacters(in: .whitespacesAndNewlines)]
+        ], label: "email code")
+    }
+
+    private func performAuthRequest(_ request: [String: Any], label: String) {
+        guard !isAuthActionInFlight else { return }
+        isAuthActionInFlight = true
         lastError = nil
-        appendDebug("Submitting 2FA password")
-        send(["@type": "checkAuthenticationPassword", "password": password]) { [weak self] response in
+        debug("Submitting \(label)")
+        send(request) { [weak self] response in
             guard let self else { return }
-            if response["@type"] as? String == "error" {
-                self.surfaceError(response)
-            } else {
-                self.lastError = nil
-                self.appendDebug("2FA password accepted")
-            }
+            self.isAuthActionInFlight = false
+            if response["@type"] as? String == "error" { self.surfaceError(response) }
         }
     }
 
     func logOut() {
-        appendDebug("Telegram logout requested")
         send(["@type": "logOut"]) { [weak self] response in
-            self?.surfaceError(response)
+            if response["@type"] as? String == "error" { self?.surfaceError(response) }
         }
     }
 
+    // MARK: Requests / final message IDs
+
     func send(_ request: [String: Any], completion: (([String: Any]) -> Void)? = nil) {
-        guard let clientID else {
+        guard let id = activeClientID else {
             DispatchQueue.main.async { self.lastError = "Telegram is not connected yet." }
-            appendDebug("Cannot send request: no active TDLib client")
             return
         }
 
         var payload = request
-        let requestType = request["@type"] as? String ?? "unknown"
-
+        let type = request["@type"] as? String ?? "unknown"
         if let completion {
             let token = UUID().uuidString
             payload["@extra"] = token
-            lock.lock()
-            callbacks[token] = completion
-            lock.unlock()
+            callbackLock.lock(); callbacks[token] = completion; callbackLock.unlock()
         }
 
         do {
             let data = try JSONSerialization.data(withJSONObject: payload)
             guard let json = String(data: data, encoding: .utf8) else { return }
-            appendDebug("→ \(requestType)")
-            td_send(clientID, json)
+            debug("→ \(type)")
+            td_send(id, json)
         } catch {
-            appendDebug("JSON serialization failed for \(requestType): \(error.localizedDescription)")
             DispatchQueue.main.async { self.lastError = error.localizedDescription }
+        }
+    }
+
+    func sendMessageAwaitingFinal(_ request: [String: Any], completion: @escaping ([String: Any]) -> Void) {
+        send(request) { [weak self] message in
+            guard let self else { return }
+            if message["@type"] as? String == "error" { completion(message); return }
+            guard let temporaryID = Self.int64(message["id"]) else {
+                completion(["@type": "error", "message": "Telegram returned no message ID."])
+                return
+            }
+            if message["sending_state"] == nil || message["sending_state"] is NSNull {
+                completion(message)
+                return
+            }
+
+            self.callbackLock.lock()
+            if let early = self.earlyFinalMessages.removeValue(forKey: temporaryID) {
+                self.callbackLock.unlock()
+                completion(early)
+            } else {
+                self.finalMessageCallbacks[temporaryID] = completion
+                self.callbackLock.unlock()
+                self.debug("Waiting for server-confirmed ID of temporary message \(temporaryID)")
+            }
         }
     }
 
     @discardableResult
     func addUpdateObserver(_ observer: @escaping ([String: Any]) -> Void) -> UUID {
         let id = UUID()
-        lock.lock()
-        observers[id] = observer
-        lock.unlock()
+        callbackLock.lock(); observers[id] = observer; callbackLock.unlock()
         return id
     }
 
     func removeUpdateObserver(_ id: UUID) {
-        lock.lock()
-        observers.removeValue(forKey: id)
-        lock.unlock()
+        callbackLock.lock(); observers.removeValue(forKey: id); callbackLock.unlock()
     }
 
-    func clearError() {
-        lastError = nil
+    func clearError() { lastError = nil }
+
+    static func retryAfterSeconds(_ response: [String: Any]) -> Int? {
+        guard response["@type"] as? String == "error" else { return nil }
+        if let code = int(response["code"]), code != 429 { return nil }
+        let message = response["message"] as? String ?? ""
+        if let range = message.range(of: #"\d+"#, options: .regularExpression) { return Int(message[range]) }
+        return 30
     }
 
-    private func start() {
-        guard clientID == nil else {
-            appendDebug("Start ignored: client already active")
-            return
-        }
-        guard hasAPICredentials else {
-            appendDebug("Start stopped: API credentials missing")
-            authorizationStage = .apiCredentials
-            return
-        }
+    // MARK: Single lifetime receiver
 
-        authorizationStage = .connecting
-        tdlibParametersInFlight = false
-        tdlibParametersConfigured = false
-        lastError = nil
-        lastAuthorizationStateName = "Starting"
-
-        let generation = UUID()
-        startGeneration = generation
-
-        let id = td_create_client_id()
-        clientID = id
-        isReceiving = true
-        appendDebug("Created TDLib client \(id)")
-
-        let logRequest: [String: Any] = ["@type": "setLogVerbosityLevel", "new_verbosity_level": 1]
-        if let data = try? JSONSerialization.data(withJSONObject: logRequest),
-           let json = String(data: data, encoding: .utf8) {
-            _ = td_execute(json)
-        }
-
-        receiveQueue.async { [weak self] in
-            self?.receiveLoop()
-        }
-
-        // IMPORTANT: td_create_client_id() only allocates an ID. The simplified TDLib JSON
-        // interface does not instantiate the client or emit updates until the FIRST td_send().
-        // A harmless getOption request is the same bootstrap pattern used by TDLib's own example.
-        send(["@type": "getOption", "name": "version"]) { [weak self] response in
-            guard let self else { return }
-            if response["@type"] as? String == "error" {
-                self.appendDebug("Bootstrap request returned an error")
-                self.surfaceError(response)
-            } else {
-                self.appendDebug("TDLib bootstrap request completed")
-            }
-        }
-
-        scheduleStartupWatchdog(clientID: id, generation: generation)
-    }
-
-    private func scheduleStartupWatchdog(clientID id: Int32, generation: UUID) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
-            guard let self,
-                  self.clientID == id,
-                  self.startGeneration == generation,
-                  self.authorizationStage == .connecting else { return }
-
-            self.appendDebug("Watchdog: still connecting after 4s, querying authorization state")
-            self.send(["@type": "getAuthorizationState"]) { [weak self] response in
-                guard let self else { return }
-                let type = response["@type"] as? String ?? "unknown"
-                self.appendDebug("Watchdog response: \(type)")
-                if type.hasPrefix("authorizationState") {
-                    self.handleAuthorizationState(response)
-                } else if type == "error" {
-                    self.surfaceError(response)
-                }
-            }
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { [weak self] in
-            guard let self,
-                  self.clientID == id,
-                  self.startGeneration == generation,
-                  self.authorizationStage == .connecting else { return }
-
-            self.appendDebug("Watchdog: connection has been stuck for 12s")
-            self.lastError = "Telegram is taking unusually long to initialize. Open the Debug console to retry the connection or erase the local Telegram session."
-        }
-    }
-
-    private func close() {
-        guard let clientID else { return }
-        appendDebug("Closing TDLib client \(clientID)")
-        isReceiving = false
-
-        if let data = try? JSONSerialization.data(withJSONObject: ["@type": "close"]),
-           let json = String(data: data, encoding: .utf8) {
-            td_send(clientID, json)
-        }
-
-        self.clientID = nil
-        tdlibParametersInFlight = false
-        tdlibParametersConfigured = false
-
-        lock.lock()
-        callbacks.removeAll()
-        lock.unlock()
+    private func startReceiverIfNeeded() {
+        receiverLock.lock()
+        if receiverRunning { receiverLock.unlock(); return }
+        receiverRunning = true
+        receiverShouldStop = false
+        receiverLock.unlock()
+        receiveQueue.async { [weak self] in self?.receiveLoop() }
     }
 
     private func receiveLoop() {
-        appendDebug("Receive loop started")
-        while isReceiving {
+        debug("Single lifetime TDLib receive pump started")
+        while true {
+            receiverLock.lock(); let stop = receiverShouldStop; receiverLock.unlock()
+            if stop { break }
+
             autoreleasepool {
                 if let result = td_receive(0.5) {
                     let string = String(cString: result)
-                    guard let data = string.data(using: .utf8),
-                          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        appendDebug("Received malformed TDLib JSON")
-                        return
+                    if let data = string.data(using: .utf8),
+                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        handle(object)
+                    } else {
+                        debug("Malformed TDLib JSON ignored")
                     }
-                    handle(object)
                 }
             }
         }
-        appendDebug("Receive loop stopped")
+        receiverLock.lock(); receiverRunning = false; receiverLock.unlock()
+        debug("TDLib receive pump stopped")
     }
 
     private func handle(_ response: [String: Any]) {
-        // td_receive is global for all simplified JSON clients. Ignore delayed events from an
-        // older client after a retry/reset so they can never corrupt the new authorization flow.
         if let responseClient = Self.int(response["@client_id"]),
-           let activeClient = clientID,
-           responseClient != Int(activeClient) {
-            appendDebug("Ignored delayed event from old client \(responseClient)")
-            return
-        }
+           let active = activeClientID,
+           responseClient != Int(active) { return }
 
         let type = response["@type"] as? String ?? ""
-        lastActivityAt = Date()
+        DispatchQueue.main.async { self.lastActivityAt = Date() }
 
         if let token = response["@extra"] as? String {
-            lock.lock()
-            let completion = callbacks.removeValue(forKey: token)
-            lock.unlock()
-            if let completion {
-                DispatchQueue.main.async { completion(response) }
-            }
+            callbackLock.lock(); let callback = callbacks.removeValue(forKey: token); callbackLock.unlock()
+            if let callback { DispatchQueue.main.async { callback(response) } }
         }
 
-        lock.lock()
-        let currentObservers = Array(observers.values)
-        lock.unlock()
-        if !currentObservers.isEmpty {
-            DispatchQueue.main.async {
-                currentObservers.forEach { $0(response) }
-            }
-        }
+        callbackLock.lock(); let currentObservers = Array(observers.values); callbackLock.unlock()
+        if !currentObservers.isEmpty { DispatchQueue.main.async { currentObservers.forEach { $0(response) } } }
 
-        if type == "updateAuthorizationState",
-           let state = response["authorization_state"] as? [String: Any] {
-            handleAuthorizationState(state)
-        } else if type == "error", response["@extra"] == nil {
-            let message = response["message"] as? String ?? "Telegram returned an unknown error."
-            appendDebug("← error: \(message)")
-            DispatchQueue.main.async {
-                self.lastError = message
+        switch type {
+        case "updateAuthorizationState":
+            if let state = response["authorization_state"] as? [String: Any] { handleAuthorizationState(state) }
+
+        case "updateMessageSendSucceeded":
+            if let oldID = Self.int64(response["old_message_id"]), let message = response["message"] as? [String: Any] {
+                resolveFinalMessage(oldID: oldID, result: message)
             }
-        } else if type.hasPrefix("update") {
-            // Keep the console useful without flooding it with full Telegram payloads.
-            if type != "updateOption" {
-                appendDebug("← \(type)")
+
+        case "updateMessageSendFailed":
+            if let oldID = Self.int64(response["old_message_id"]) {
+                let error = response["error"] as? [String: Any] ?? ["@type": "error", "message": "Telegram failed to send the message."]
+                resolveFinalMessage(oldID: oldID, result: error)
             }
+
+        case "error":
+            if response["@extra"] == nil {
+                let message = response["message"] as? String ?? "Unknown Telegram error"
+                debug("← error: \(message)")
+                DispatchQueue.main.async { self.lastError = message }
+            }
+
+        default:
+            if type.hasPrefix("update") && type != "updateOption" && type != "updateFile" { debug("← \(type)") }
         }
     }
 
+    private func resolveFinalMessage(oldID: Int64, result: [String: Any]) {
+        callbackLock.lock()
+        if let callback = finalMessageCallbacks.removeValue(forKey: oldID) {
+            callbackLock.unlock()
+            DispatchQueue.main.async { callback(result) }
+        } else {
+            earlyFinalMessages[oldID] = result
+            if earlyFinalMessages.count > 50, let first = earlyFinalMessages.keys.first { earlyFinalMessages.removeValue(forKey: first) }
+            callbackLock.unlock()
+        }
+    }
+
+    // MARK: Authorization state machine
+
     private func handleAuthorizationState(_ state: [String: Any]) {
         let type = state["@type"] as? String ?? "unknown"
-        lastAuthorizationStateName = type
-        appendDebug("AUTH → \(type)")
+        debug("AUTH → \(type)")
+        DispatchQueue.main.async {
+            self.lastAuthorizationStateName = type
+            self.isAuthActionInFlight = false
+        }
 
         switch type {
         case "authorizationStateWaitTdlibParameters":
             configureTDLib()
 
         case "authorizationStateWaitPhoneNumber":
-            tdlibParametersInFlight = false
             tdlibParametersConfigured = true
-            DispatchQueue.main.async { self.lastError = nil }
-            publish(stage: .phone)
+            DispatchQueue.main.async {
+                self.loginCodeInfo = nil
+                self.lastError = nil
+                self.authorizationStage = .phone
+            }
 
         case "authorizationStateWaitCode":
-            tdlibParametersInFlight = false
-            tdlibParametersConfigured = true
-            DispatchQueue.main.async { self.lastError = nil }
-
-            var hint = "Enter the login code Telegram sent to you."
-            if let codeInfo = state["code_info"] as? [String: Any],
-               let codeType = codeInfo["type"] as? [String: Any],
-               let codeTypeName = codeType["@type"] as? String {
-                appendDebug("Login code delivery: \(codeTypeName)")
-                if codeTypeName.contains("TelegramMessage") {
-                    hint = "Telegram sent the login code as a private message. Open an already signed-in Telegram app and check the verified ‘Telegram’ service chat — this is not an SMS."
-                } else if codeTypeName.contains("Sms") {
-                    hint = "Telegram sent the login code by SMS to your phone number."
-                } else if codeTypeName.contains("Call") {
-                    hint = "Telegram will provide the login code by phone call."
-                } else if codeTypeName.contains("Email") {
-                    hint = "Telegram sent the login code to the email address linked to your account."
-                }
+            let info = parseCodeInfo(state["code_info"] as? [String: Any])
+            DispatchQueue.main.async {
+                self.loginCodeInfo = info
+                self.lastError = nil
+                self.authorizationStage = .code(hint: info?.deliveryDescription ?? "Enter the code Telegram sent to you.")
             }
-            publish(stage: .code(hint: hint))
+
+        case "authorizationStateWaitOtherDeviceConfirmation":
+            let link = state["link"] as? String ?? ""
+            DispatchQueue.main.async { self.lastError = nil; self.authorizationStage = .qr(link: link) }
+
+        case "authorizationStateWaitEmailAddress":
+            DispatchQueue.main.async { self.authorizationStage = .emailAddress(pattern: "") }
+
+        case "authorizationStateWaitEmailCode":
+            let info = state["code_info"] as? [String: Any]
+            let pattern = info?["email_address_pattern"] as? String ?? "your email"
+            DispatchQueue.main.async { self.authorizationStage = .emailCode(pattern: pattern) }
 
         case "authorizationStateWaitPassword":
-            DispatchQueue.main.async { self.lastError = nil }
             let hint = state["password_hint"] as? String ?? ""
-            publish(stage: .password(hint: hint))
+            DispatchQueue.main.async { self.lastError = nil; self.authorizationStage = .password(hint: hint) }
 
         case "authorizationStateReady":
-            tdlibParametersInFlight = false
             tdlibParametersConfigured = true
-            DispatchQueue.main.async { self.lastError = nil }
-            publish(stage: .ready)
+            DispatchQueue.main.async {
+                self.loginCodeInfo = nil
+                self.lastError = nil
+                self.authorizationStage = .ready
+            }
             loadSelfAndSavedMessages()
 
         case "authorizationStateClosing", "authorizationStateLoggingOut":
-            publish(stage: .connecting)
+            DispatchQueue.main.async { self.authorizationStage = .connecting }
 
         case "authorizationStateClosed":
-            tdlibParametersInFlight = false
             tdlibParametersConfigured = false
-            publish(stage: .closed)
-
-        case "authorizationStateWaitEmailAddress":
-            publish(stage: .error("Telegram requires an email verification step for this login. This build currently supports phone code and 2FA password login."))
-
-        case "authorizationStateWaitEmailCode":
-            publish(stage: .error("Telegram requires an email verification code for this login. This build currently supports phone code and 2FA password login."))
+            DispatchQueue.main.async { self.authorizationStage = .closed }
 
         default:
-            appendDebug("Unhandled authorization state: \(type)")
+            debug("Unhandled auth state \(type)")
         }
     }
 
+    private func parseCodeInfo(_ object: [String: Any]?) -> LoginCodeInfo? {
+        guard let object else { return nil }
+        let type = (object["type"] as? [String: Any])?["@type"] as? String ?? "unknown"
+        let next = (object["next_type"] as? [String: Any])?["@type"] as? String
+        let timeout = Self.int(object["timeout"]) ?? 0
+        debug("Code delivery \(type), next=\(next ?? "none"), timeout=\(timeout)s")
+        return LoginCodeInfo(
+            deliveryType: type,
+            deliveryDescription: Self.describeCodeType(type),
+            nextDeliveryType: next,
+            nextDeliveryDescription: next.map(Self.describeCodeType),
+            timeout: timeout,
+            resendAvailableAt: next == nil ? nil : Date().addingTimeInterval(TimeInterval(max(0, timeout)))
+        )
+    }
+
+    private static func describeCodeType(_ type: String) -> String {
+        if type.contains("TelegramMessage") { return "Telegram sent the code to the verified Telegram service chat in an already signed-in Telegram app." }
+        if type.contains("SmsPhrase") { return "Telegram sent an SMS phrase." }
+        if type.contains("SmsWord") { return "Telegram sent an SMS word." }
+        if type.contains("Sms") { return "Telegram sent the code by SMS." }
+        if type.contains("MissedCall") { return "Telegram selected missed-call verification." }
+        if type.contains("FlashCall") { return "Telegram selected flash-call verification." }
+        if type.contains("Call") { return "Telegram will provide the code by phone call." }
+        if type.contains("Fragment") { return "Telegram sent the code through Fragment." }
+        if type.contains("Firebase") { return "Telegram is performing device verification before code delivery." }
+        return "Telegram selected a code delivery method for this account."
+    }
+
     private func configureTDLib() {
-        guard !tdlibParametersConfigured, !tdlibParametersInFlight else {
-            appendDebug("Duplicate setTdlibParameters prevented")
-            return
-        }
-        guard let apiIDString = KeychainStore.get(apiIDKey),
-              let apiID = Int(apiIDString),
-              let apiHash = KeychainStore.get(apiHashKey) else {
-            appendDebug("TDLib parameters cannot be configured: credentials missing")
-            publish(stage: .apiCredentials)
+        guard !tdlibParametersConfigured, !tdlibParametersInFlight else { return }
+        guard let idText = KeychainStore.get(apiIDKey), let apiID = Int(idText), let apiHash = KeychainStore.get(apiHashKey) else {
+            DispatchQueue.main.async { self.authorizationStage = .apiCredentials }
             return
         }
 
         let fm = FileManager.default
-        guard let support = try? fm.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ) else {
-            appendDebug("Unable to open Application Support directory")
-            lastError = "TGSpeicher could not open its local Application Support directory."
+        guard let support = try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
+            DispatchQueue.main.async { self.lastError = "TGSpeicher cannot open Application Support." }
             return
         }
-
         let root = support.appendingPathComponent("TGSpeicher-TDLib", isDirectory: true)
         let database = root.appendingPathComponent("database", isDirectory: true)
         let files = root.appendingPathComponent("files", isDirectory: true)
@@ -498,13 +543,12 @@ final class TelegramClient: ObservableObject {
             try fm.createDirectory(at: database, withIntermediateDirectories: true)
             try fm.createDirectory(at: files, withIntermediateDirectories: true)
         } catch {
-            appendDebug("Unable to create TDLib directories: \(error.localizedDescription)")
-            lastError = error.localizedDescription
+            DispatchQueue.main.async { self.lastError = error.localizedDescription }
             return
         }
 
-        let language = Locale.current.language.languageCode?.identifier ?? "en"
-        let params: [String: Any] = [
+        tdlibParametersInFlight = true
+        send([
             "@type": "setTdlibParameters",
             "use_test_dc": false,
             "database_directory": database.path,
@@ -516,15 +560,11 @@ final class TelegramClient: ObservableObject {
             "use_secret_chats": false,
             "api_id": apiID,
             "api_hash": apiHash,
-            "system_language_code": language,
+            "system_language_code": Locale.current.language.languageCode?.identifier ?? "en",
             "device_model": UIDevice.current.model,
             "system_version": UIDevice.current.systemVersion,
-            "application_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        ]
-
-        tdlibParametersInFlight = true
-        appendDebug("Configuring TDLib parameters")
-        send(params) { [weak self] response in
+            "application_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1"
+        ]) { [weak self] response in
             guard let self else { return }
             self.tdlibParametersInFlight = false
             if response["@type"] as? String == "error" {
@@ -532,68 +572,60 @@ final class TelegramClient: ObservableObject {
                 self.surfaceError(response)
             } else {
                 self.tdlibParametersConfigured = true
-                self.lastError = nil
-                self.appendDebug("TDLib parameters accepted")
+                self.debug("TDLib parameters accepted")
             }
         }
     }
 
+    private func scheduleStartupWatchdog(clientID id: Int32, generation: UUID) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self, self.activeClientID == id, self.startGeneration == generation, self.authorizationStage == .connecting else { return }
+            self.debug("Startup watchdog querying authorization state")
+            self.send(["@type": "getAuthorizationState"]) { [weak self] response in
+                guard let self else { return }
+                let type = response["@type"] as? String ?? ""
+                if type.hasPrefix("authorizationState") { self.handleAuthorizationState(response) }
+                else if type == "error" { self.surfaceError(response) }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, self.activeClientID == id, self.startGeneration == generation, self.authorizationStage == .connecting else { return }
+            self.lastError = "Telegram is still initializing. Open Debug to retry or erase the local session."
+        }
+    }
+
     private func loadSelfAndSavedMessages() {
-        appendDebug("Loading Telegram account profile")
-        send(["@type": "getMe"]) { [weak self] response in
+        send(["@type": "getMe"]) { [weak self] me in
             guard let self else { return }
-            if response["@type"] as? String == "error" {
-                self.surfaceError(response)
-                return
-            }
-
-            let first = response["first_name"] as? String ?? ""
-            let last = response["last_name"] as? String ?? ""
-            let name = ([first, last].filter { !$0.isEmpty }).joined(separator: " ")
-            self.accountName = name.isEmpty ? "Telegram" : name
-
-            guard let userID = Self.int64(response["id"]) else {
-                self.appendDebug("getMe returned no usable user ID")
-                return
-            }
-
+            if me["@type"] as? String == "error" { self.surfaceError(me); return }
+            let first = me["first_name"] as? String ?? ""
+            let last = me["last_name"] as? String ?? ""
+            self.accountName = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
+            guard let userID = Self.int64(me["id"]) else { return }
             self.send(["@type": "createPrivateChat", "user_id": userID, "force": false]) { [weak self] chat in
                 guard let self else { return }
-                if chat["@type"] as? String == "error" {
-                    self.surfaceError(chat)
-                    return
-                }
+                if chat["@type"] as? String == "error" { self.surfaceError(chat); return }
                 self.savedMessagesChatID = Self.int64(chat["id"])
-                self.appendDebug("Saved Messages chat is ready")
+                self.debug("Saved Messages ready")
             }
         }
     }
 
     private func surfaceError(_ response: [String: Any]) {
         guard response["@type"] as? String == "error" else { return }
-        let rawMessage = response["message"] as? String ?? "Telegram returned an unknown error."
-        appendDebug("TDLib error: \(rawMessage)")
-        let message = rawMessage.replacingOccurrences(of: "_", with: " ").localizedCapitalized
-        DispatchQueue.main.async {
-            self.lastError = message
-        }
+        let raw = response["message"] as? String ?? "Unknown Telegram error"
+        debug("TDLib error: \(raw)")
+        let friendly = Self.retryAfterSeconds(response).map { "Telegram rate limit: please wait about \($0) seconds." }
+            ?? raw.replacingOccurrences(of: "_", with: " ")
+        DispatchQueue.main.async { self.lastError = friendly }
     }
 
-    private func publish(stage: AuthorizationStage) {
-        DispatchQueue.main.async {
-            self.authorizationStage = stage
-        }
-    }
-
-    private func appendDebug(_ message: String) {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
+    private func debug(_ message: String) {
+        let formatter = DateFormatter(); formatter.dateFormat = "HH:mm:ss.SSS"
         let line = "[\(formatter.string(from: Date()))] \(message)"
         DispatchQueue.main.async {
             self.debugLines.append(line)
-            if self.debugLines.count > 250 {
-                self.debugLines.removeFirst(self.debugLines.count - 250)
-            }
+            if self.debugLines.count > 300 { self.debugLines.removeFirst(self.debugLines.count - 300) }
             self.lastActivityAt = Date()
         }
     }
