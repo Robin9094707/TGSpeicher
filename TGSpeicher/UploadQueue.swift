@@ -72,6 +72,7 @@ final class UploadQueueManager: ObservableObject {
     private let network: TGNetworkMonitor
     private var cancellables = Set<AnyCancellable>()
     private var activeID: UUID?
+    private var pendingCleanupItems: [UUID: DispatchWorkItem] = [:]
 
     init(cloud: CloudStore, preferences: AppPreferences, network: TGNetworkMonitor) {
         self.cloud = cloud
@@ -241,9 +242,13 @@ final class UploadQueueManager: ObservableObject {
 
     func retry(_ item: QueuedUpload, automatic: Bool = false) {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        cancelPendingCleanup(for: item.id)
         guard FileManager.default.fileExists(atPath: items[index].localPath) else {
             items[index].state = .failed
             items[index].lastError = "The queued local copy is missing. Add the file again."
+            if automatic {
+                items[index].automaticRetryCount = (items[index].automaticRetryCount ?? 0) + 1
+            }
             persist()
             return
         }
@@ -251,6 +256,7 @@ final class UploadQueueManager: ObservableObject {
         items[index].lastError = nil
         items[index].startedAt = nil
         items[index].completedAt = nil
+        items[index].cloudFileID = nil
         if automatic {
             items[index].automaticRetryCount = (items[index].automaticRetryCount ?? 0) + 1
         } else {
@@ -289,6 +295,7 @@ final class UploadQueueManager: ObservableObject {
         guard let index = items.firstIndex(where: { $0.state == .queued }) else { return }
 
         let url = URL(fileURLWithPath: items[index].localPath)
+        cancelPendingCleanup(for: items[index].id)
         guard FileManager.default.fileExists(atPath: url.path) else {
             items[index].state = .failed
             items[index].lastError = "The queued local copy no longer exists."
@@ -301,10 +308,17 @@ final class UploadQueueManager: ObservableObject {
         items[index].startedAt = Date()
         items[index].lastError = nil
         activeID = items[index].id
-        let item = items[index]
         persist()
         cloud.lastError = nil
-        cloud.uploadFile(url, folderID: item.folderID, tagIDs: item.tagIDs)
+        let expectedCloudFileID = cloud.uploadFile(
+            url,
+            folderID: items[index].folderID,
+            tagIDs: items[index].tagIDs
+        )
+        if let expectedCloudFileID {
+            items[index].cloudFileID = expectedCloudFileID
+            persist()
+        }
 
         if cloud.upload == nil {
             DispatchQueue.main.async { [weak self] in self?.finishActiveUpload() }
@@ -318,13 +332,12 @@ final class UploadQueueManager: ObservableObject {
             return
         }
 
-        let started = items[index].startedAt ?? .distantPast
-        if let uploadedFile = matchingCloudFile(for: items[index], since: started) {
+        if let uploadedFile = matchingCloudFile(for: items[index]) {
             items[index].state = .completed
             items[index].completedAt = Date()
             items[index].lastError = nil
             items[index].cloudFileID = uploadedFile.id
-            cleanupLocalCopy(for: items[index], after: 8)
+            cleanupLocalCopy(for: items[index], after: 30)
         } else {
             items[index].state = .failed
             items[index].lastError = cloud.lastError ?? "Upload did not complete. You can retry it from Transfers."
@@ -336,16 +349,16 @@ final class UploadQueueManager: ObservableObject {
 
     private func recoverInterruptedUploads() {
         for index in items.indices where items[index].state == .uploading {
-            if let started = items[index].startedAt,
-               let uploadedFile = matchingCloudFile(for: items[index], since: started) {
+            if let uploadedFile = matchingCloudFile(for: items[index]) {
                 items[index].state = .completed
                 items[index].completedAt = Date()
                 items[index].lastError = nil
                 items[index].cloudFileID = uploadedFile.id
-                cleanupLocalCopy(for: items[index])
+                cleanupLocalCopy(for: items[index], after: 8)
             } else {
                 items[index].state = .queued
                 items[index].startedAt = nil
+                items[index].cloudFileID = nil
             }
         }
     }
@@ -380,14 +393,9 @@ final class UploadQueueManager: ObservableObject {
         }
     }
 
-    private func matchingCloudFile(for item: QueuedUpload, since started: Date) -> CloudFileEntry? {
-        cloud.index.files
-            .filter {
-                $0.folderID == item.folderID &&
-                $0.name == item.displayName &&
-                $0.modifiedAt >= started.addingTimeInterval(-3)
-            }
-            .max(by: { $0.modifiedAt < $1.modifiedAt })
+    private func matchingCloudFile(for item: QueuedUpload) -> CloudFileEntry? {
+        guard let cloudFileID = item.cloudFileID else { return nil }
+        return cloud.index.files.first { $0.id == cloudFileID }
     }
 
     private var queueRootURL: URL {
@@ -430,11 +438,23 @@ final class UploadQueueManager: ObservableObject {
         let parent = url.deletingLastPathComponent().standardizedFileURL
         let root = queueRootURL.standardizedFileURL
         guard parent.path.hasPrefix(root.path + "/") else { return }
-        let remove: () -> Void = { try? FileManager.default.removeItem(at: parent) }
-        if delay > 0 {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: remove)
-        } else {
-            remove()
+        cancelPendingCleanup(for: item.id)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingCleanupItems[item.id] = nil
+            guard self.activeID != item.id else { return }
+            if let live = self.items.first(where: { $0.id == item.id }), live.state != .completed {
+                return
+            }
+            DispatchQueue.global(qos: .utility).async {
+                try? FileManager.default.removeItem(at: parent)
+            }
         }
+        pendingCleanupItems[item.id] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay), execute: work)
+    }
+
+    private func cancelPendingCleanup(for itemID: UUID) {
+        pendingCleanupItems.removeValue(forKey: itemID)?.cancel()
     }
 }

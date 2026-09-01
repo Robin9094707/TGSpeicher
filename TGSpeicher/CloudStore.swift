@@ -157,14 +157,15 @@ final class CloudStore: ObservableObject {
 
     // MARK: - Upload
 
-    func uploadFile(_ url: URL, folderID: UUID?, tagIDs: [UUID] = []) {
+    @discardableResult
+    func uploadFile(_ url: URL, folderID: UUID?, tagIDs: [UUID] = []) -> UUID? {
         guard upload == nil else {
             lastError = "Another upload is already running. TGSpeicher serializes uploads to protect the Telegram session."
-            return
+            return nil
         }
         guard telegram.savedMessagesChatID != nil else {
             lastError = "Saved Messages is not ready yet."
-            return
+            return nil
         }
 
         let fileID = UUID()
@@ -219,6 +220,7 @@ final class CloudStore: ObservableObject {
                 }
             }
         }
+        return fileID
     }
 
     private func sendPreparedChunks(

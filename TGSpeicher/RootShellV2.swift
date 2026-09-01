@@ -56,7 +56,7 @@ struct V2RootView: View {
         }
         .preferredColorScheme(preferences.appearance.colorScheme)
         .alert("Telegram", isPresented: Binding(
-            get: { telegram.lastError != nil },
+            get: { telegram.lastError != nil && !photoBackup.isRunning },
             set: { if !$0 { telegram.clearError() } }
         )) {
             Button("OK", role: .cancel) { telegram.clearError() }
@@ -65,7 +65,9 @@ struct V2RootView: View {
         }
         .alert("TGSpeicher", isPresented: Binding(
             get: {
-                cloud.lastError != nil || queue.lastError != nil || remoteImporter.lastError != nil || proxy.lastError != nil || photoBackup.lastError != nil
+                !photoBackup.isRunning && (
+                    cloud.lastError != nil || queue.lastError != nil || remoteImporter.lastError != nil || proxy.lastError != nil || photoBackup.lastError != nil
+                )
             },
             set: { visible in
                 if !visible {

@@ -98,6 +98,7 @@ struct PhotoBackupView: View {
                 if manager.hasLibraryAccess {
                     statistics
                     controls
+                    if !manager.recentFailures.isEmpty { diagnostics }
                     CloudGallerySection(
                         model: galleryModel,
                         selectedCloudFileID: $selectedCloudFileID
@@ -238,6 +239,51 @@ struct PhotoBackupView: View {
 
             Text("Deletion is always optional. TGSpeicher only offers Photos items whose required backup resources are mapped to cloud files.")
                 .font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .tgGlassCard()
+    }
+
+    private var diagnostics: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Backup Diagnostics", systemImage: "wrench.and.screwdriver.fill")
+                    .font(.headline)
+                Spacer()
+                Text("\(manager.recentFailures.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Text("Recoverable errors are logged here. They do not stop Night Backup.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(Array(manager.recentFailures.prefix(5))) { failure in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text(failure.fileName ?? failure.stage)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer()
+                        Text(failure.occurredAt.formatted(date: .omitted, time: .shortened))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("\(failure.stage) • attempt \(failure.attempt)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(failure.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
+                if failure.id != manager.recentFailures.prefix(5).last?.id { Divider() }
+            }
+
+            Button("Clear diagnostics", systemImage: "trash") {
+                manager.clearFailureHistory()
+            }
+            .font(.caption)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .tgGlassCard()
@@ -545,6 +591,12 @@ struct NightPhotoBackupScreen: View {
 
                 Text("\(manager.backedUpAssets) / \(manager.totalAssets) library items backed up")
                     .font(.caption).foregroundStyle(.white.opacity(0.5))
+                if !manager.recentFailures.isEmpty {
+                    Text("\(manager.recentFailures.count) recovered issue(s) logged • Night Backup continues")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.45))
+                        .multilineTextAlignment(.center)
+                }
                 Spacer()
                 HStack {
                     Button("Pause", systemImage: "pause.fill") { manager.pauseBackup() }

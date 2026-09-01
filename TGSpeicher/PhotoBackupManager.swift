@@ -15,6 +15,34 @@ struct PhotoBackupRecord: Identifiable, Codable, Hashable {
     let uploadedAt: Date
 }
 
+struct PhotoBackupFailureRecord: Identifiable, Codable, Hashable {
+    let id: UUID
+    let occurredAt: Date
+    let stage: String
+    let fileName: String?
+    let resourceKey: String?
+    let message: String
+    let attempt: Int
+
+    init(
+        id: UUID = UUID(),
+        occurredAt: Date = Date(),
+        stage: String,
+        fileName: String?,
+        resourceKey: String?,
+        message: String,
+        attempt: Int
+    ) {
+        self.id = id
+        self.occurredAt = occurredAt
+        self.stage = stage
+        self.fileName = fileName
+        self.resourceKey = resourceKey
+        self.message = message
+        self.attempt = attempt
+    }
+}
+
 private struct PhotoBackupSnapshot: Codable {
     var schema = 1
     var revision: Int64
@@ -68,6 +96,7 @@ final class PhotoBackupManager: ObservableObject {
     @Published private(set) var iCloudProgress: Double = 0
     @Published private(set) var statusText = "Photo backup is ready"
     @Published private(set) var latestCompletedRecord: PhotoBackupRecord?
+    @Published private(set) var recentFailures: [PhotoBackupFailureRecord] = []
     @Published var lastError: String?
     @Published var autoResumeOnLaunch: Bool {
         didSet { defaults.set(autoResumeOnLaunch, forKey: Self.autoResumeKey) }
@@ -96,6 +125,9 @@ final class PhotoBackupManager: ObservableObject {
     private var lastRemoteSnapshotAt = Date.distantPast
     private var scheduledRetryIDs = Set<UUID>()
     private var photoExportRetryCount: [String: Int] = [:]
+    private var deferredCandidateKeys = Set<String>()
+    private var deferredRetryCycles: [String: Int] = [:]
+    private var infrastructureRetryKeys = Set<String>()
     private var remoteIndexReady = false
     private var previousBrightness: CGFloat?
     private var previousIdleTimerDisabled: Bool?
@@ -118,6 +150,7 @@ final class PhotoBackupManager: ObservableObject {
         self.autoResumeOnLaunch = defaults.object(forKey: Self.autoResumeKey) as? Bool ?? true
         self.snapshotMessageID = defaults.object(forKey: "photos.snapshotMessageID") as? Int64
         loadLocalIndex()
+        loadFailureHistory()
         self.isPaused = defaults.bool(forKey: Self.backupEnabledKey)
             && defaults.bool(forKey: Self.pausedKey)
         self.isNightMode = defaults.bool(forKey: Self.backupEnabledKey)
@@ -128,6 +161,24 @@ final class PhotoBackupManager: ObservableObject {
         queue.$items
             .receive(on: RunLoop.main)
             .sink { [weak self] items in self?.handleQueue(items) }
+            .store(in: &cancellables)
+
+        queue.$lastError
+            .compactMap { $0 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] message in self?.captureOperationalError(message, stage: "Upload queue") }
+            .store(in: &cancellables)
+
+        cloud.$lastError
+            .compactMap { $0 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] message in self?.captureOperationalError(message, stage: "Telegram upload") }
+            .store(in: &cancellables)
+
+        telegram.$lastError
+            .compactMap { $0 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] message in self?.captureOperationalError(message, stage: "Telegram") }
             .store(in: &cancellables)
 
         telegram.$savedMessagesChatID
@@ -355,6 +406,12 @@ final class PhotoBackupManager: ObservableObject {
         if !isRunning { statusText = "Restoring Night Backup…" }
     }
 
+    func clearFailureHistory() {
+        recentFailures = []
+        guard let url = failureHistoryURL else { return }
+        indexIOQueue.async { try? FileManager.default.removeItem(at: url) }
+    }
+
     func cloudFile(for record: PhotoBackupRecord) -> CloudFileEntry? {
         cloud.index.files.first { $0.id == record.cloudFileID }
     }
@@ -463,6 +520,10 @@ final class PhotoBackupManager: ObservableObject {
 
         reconcileRecordsWithCloudIndex()
         guard let next = nextPendingCandidate() else {
+            if !deferredCandidateKeys.isEmpty {
+                statusText = "Waiting to retry \(deferredCandidateKeys.count) deferred item(s)…"
+                return
+            }
             isRunning = false
             isPaused = false
             currentFileName = nil
@@ -482,11 +543,7 @@ final class PhotoBackupManager: ObservableObject {
     private func continueCurrentWorkOrStartNext() {
         if let currentQueueItemID,
            let item = queue.items.first(where: { $0.id == currentQueueItemID && $0.state == .failed }) {
-            if (item.automaticRetryCount ?? 0) >= 5 {
-                queue.retry(item)
-            } else {
-                scheduleAutomaticRetry(item)
-            }
+            scheduleAutomaticRetry(item)
             return
         }
         if let currentCandidate, currentQueueItemID == nil, !isExportingFromPhotos {
@@ -505,8 +562,13 @@ final class PhotoBackupManager: ObservableObject {
         let resource = resolveResource(for: candidate, asset: asset) else {
             currentCandidate = nil
             currentFileName = nil
-            lastError = "The Photos item for \(candidate.fileName) is no longer available. Refresh the library and try again."
-            pauseBackup()
+            deferCandidateAfterFailure(
+                candidate,
+                stage: "Photos lookup",
+                message: "The Photos item is temporarily unavailable.",
+                attempt: 1,
+                baseDelay: 300
+            )
             return
         }
 
@@ -521,8 +583,12 @@ final class PhotoBackupManager: ObservableObject {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         } catch {
             isExportingFromPhotos = false
-            lastError = error.localizedDescription
-            pauseBackup()
+            scheduleInfrastructureRetry(
+                candidate,
+                folderID: folderID,
+                stage: "Temporary storage",
+                message: error.localizedDescription
+            )
             return
         }
         let destination = folder.appendingPathComponent(safeFileName(candidate.fileName))
@@ -567,9 +633,15 @@ final class PhotoBackupManager: ObservableObject {
                             self.exportToQueue(candidate, folderID: folderID)
                         }
                     } else {
-                        self.lastError = error.localizedDescription
-                        self.statusText = "Photos export paused after repeated errors"
-                        self.pauseBackup()
+                        self.currentCandidate = nil
+                        self.currentFileName = nil
+                        self.deferCandidateAfterFailure(
+                            candidate,
+                            stage: "iCloud download",
+                            message: error.localizedDescription,
+                            attempt: attempt,
+                            baseDelay: 300
+                        )
                     }
                     return
                 }
@@ -646,6 +718,9 @@ final class PhotoBackupManager: ObservableObject {
             uploadedAt: Date()
         )
         recordsByKey[metadata.resourceKey] = record
+        deferredCandidateKeys.remove(metadata.resourceKey)
+        deferredRetryCycles[metadata.resourceKey] = nil
+        infrastructureRetryKeys.remove(metadata.resourceKey)
         latestCompletedRecord = record
         appendLocalJournal(record)
         checkpointRemoteIndexIfNeeded()
@@ -665,7 +740,10 @@ final class PhotoBackupManager: ObservableObject {
         while pendingCandidateCursor < pendingCandidates.count {
             let candidate = pendingCandidates[pendingCandidateCursor]
             pendingCandidateCursor += 1
-            if recordsByKey[candidate.resourceKey] == nil { return candidate }
+            if recordsByKey[candidate.resourceKey] == nil,
+               !deferredCandidateKeys.contains(candidate.resourceKey) {
+                return candidate
+            }
         }
         return nil
     }
@@ -673,10 +751,9 @@ final class PhotoBackupManager: ObservableObject {
     private func scheduleAutomaticRetry(_ item: QueuedUpload) {
         guard isRunning, !isPaused else { return }
         let attempts = item.automaticRetryCount ?? 0
-        guard attempts < 5 else {
-            lastError = item.lastError ?? "Telegram upload failed repeatedly."
-            statusText = "Backup paused after repeated upload errors"
-            pauseBackup()
+        let localCopyExists = FileManager.default.fileExists(atPath: item.localPath)
+        guard attempts < 5, localCopyExists else {
+            deferFailedQueueItem(item, attempts: max(1, attempts))
             return
         }
         guard scheduledRetryIDs.insert(item.id).inserted else { return }
@@ -692,6 +769,81 @@ final class PhotoBackupManager: ObservableObject {
                   let current = self.queue.items.first(where: { $0.id == item.id }),
                   current.state == .failed else { return }
             self.queue.retry(current, automatic: true)
+        }
+    }
+
+    private func deferFailedQueueItem(_ item: QueuedUpload, attempts: Int) {
+        guard let metadata = item.photoBackup else { return }
+        scheduledRetryIDs.remove(item.id)
+        let candidate = PhotoBackupCandidate(
+            assetLocalIdentifier: metadata.assetLocalIdentifier,
+            resourceTypeRawValue: metadata.resourceTypeRawValue,
+            fileName: metadata.fileName,
+            mediaKind: metadata.mediaKind,
+            creationDate: metadata.creationDate
+        )
+        let message = item.lastError ?? "Telegram upload failed repeatedly."
+        let stage = FileManager.default.fileExists(atPath: item.localPath) ? "Telegram upload" : "Queue recovery"
+        if currentQueueItemID == item.id {
+            currentQueueItemID = nil
+            currentCandidate = nil
+            currentFileName = nil
+        }
+        queue.remove(item)
+        deferCandidateAfterFailure(
+            candidate,
+            stage: stage,
+            message: message,
+            attempt: attempts,
+            baseDelay: 120
+        )
+    }
+
+    private func deferCandidateAfterFailure(
+        _ candidate: PhotoBackupCandidate,
+        stage: String,
+        message: String,
+        attempt: Int,
+        baseDelay: TimeInterval
+    ) {
+        recordFailure(stage: stage, candidate: candidate, message: message, attempt: attempt)
+        photoExportRetryCount[candidate.resourceKey] = nil
+        let cycle = (deferredRetryCycles[candidate.resourceKey] ?? 0) + 1
+        deferredRetryCycles[candidate.resourceKey] = cycle
+        guard deferredCandidateKeys.insert(candidate.resourceKey).inserted else { return }
+
+        let delay = min(3_600.0, baseDelay * pow(2.0, Double(min(cycle - 1, 4))))
+        statusText = "Skipped \(candidate.fileName) for now • retrying later"
+        DispatchQueue.main.async { [weak self] in self?.processNextIfPossible() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.deferredCandidateKeys.remove(candidate.resourceKey)
+            guard self.isRunning, !self.isPaused,
+                  self.recordsByKey[candidate.resourceKey] == nil else { return }
+            self.pendingCandidates.append(candidate)
+            self.statusText = "Retrying deferred item \(candidate.fileName)"
+            self.processNextIfPossible()
+        }
+    }
+
+    private func scheduleInfrastructureRetry(
+        _ candidate: PhotoBackupCandidate,
+        folderID: UUID,
+        stage: String,
+        message: String
+    ) {
+        let attempt = (photoExportRetryCount[candidate.resourceKey] ?? 0) + 1
+        photoExportRetryCount[candidate.resourceKey] = attempt
+        recordFailure(stage: stage, candidate: candidate, message: message, attempt: attempt)
+        guard infrastructureRetryKeys.insert(candidate.resourceKey).inserted else { return }
+        let delay = min(300.0, max(30.0, pow(2.0, Double(min(attempt, 7)))))
+        statusText = "Storage temporarily unavailable • retrying in \(Int(delay))s"
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.infrastructureRetryKeys.remove(candidate.resourceKey)
+            guard self.isRunning, !self.isPaused,
+                  self.currentCandidate?.resourceKey == candidate.resourceKey else { return }
+            self.exportToQueue(candidate, folderID: folderID)
         }
     }
 
@@ -815,6 +967,10 @@ final class PhotoBackupManager: ObservableObject {
         localIndexURL?.deletingLastPathComponent().appendingPathComponent("photo-backup-journal-v1.jsonl")
     }
 
+    private var failureHistoryURL: URL? {
+        localIndexURL?.deletingLastPathComponent().appendingPathComponent("photo-backup-errors-v1.json")
+    }
+
     private func loadLocalIndex() {
         if let url = localIndexURL,
            let data = try? Data(contentsOf: url),
@@ -826,6 +982,68 @@ final class PhotoBackupManager: ObservableObject {
                 guard let event = try? JSONDecoder().decode(PhotoBackupJournalEvent.self, from: Data(line)) else { continue }
                 recordsByKey[event.record.resourceKey] = event.record
             }
+        }
+    }
+
+    private func loadFailureHistory() {
+        guard let url = failureHistoryURL,
+              let data = try? Data(contentsOf: url),
+              let failures = try? JSONDecoder().decode([PhotoBackupFailureRecord].self, from: data) else { return }
+        recentFailures = Array(failures.prefix(500))
+    }
+
+    private func recordFailure(
+        stage: String,
+        candidate: PhotoBackupCandidate?,
+        message: String,
+        attempt: Int
+    ) {
+        if let newest = recentFailures.first,
+           newest.stage == stage,
+           newest.resourceKey == candidate?.resourceKey,
+           newest.message == message,
+           Date().timeIntervalSince(newest.occurredAt) < 3 {
+            return
+        }
+        recentFailures.insert(
+            PhotoBackupFailureRecord(
+                stage: stage,
+                fileName: candidate?.fileName ?? currentFileName,
+                resourceKey: candidate?.resourceKey ?? currentCandidate?.resourceKey,
+                message: message,
+                attempt: max(1, attempt)
+            ),
+            at: 0
+        )
+        if recentFailures.count > 500 { recentFailures.removeLast(recentFailures.count - 500) }
+        persistFailureHistory()
+    }
+
+    private func persistFailureHistory() {
+        guard let url = failureHistoryURL,
+              let data = try? JSONEncoder().encode(recentFailures) else { return }
+        indexIOQueue.async { try? data.write(to: url, options: [.atomic]) }
+    }
+
+    private func captureOperationalError(_ message: String, stage: String) {
+        guard isRunning, !isPaused else { return }
+        recordFailure(stage: stage, candidate: currentCandidate, message: message, attempt: 1)
+        if stage == "Upload queue" {
+            queue.lastError = nil
+            if let candidate = currentCandidate,
+               currentQueueItemID == nil,
+               !isExportingFromPhotos {
+                scheduleInfrastructureRetry(
+                    candidate,
+                    folderID: ensureBackupFolder(),
+                    stage: stage,
+                    message: message
+                )
+            }
+        } else if stage == "Telegram upload" {
+            cloud.lastError = nil
+        } else if stage == "Telegram" {
+            telegram.clearError()
         }
     }
 
