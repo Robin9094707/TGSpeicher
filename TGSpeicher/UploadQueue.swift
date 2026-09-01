@@ -276,7 +276,7 @@ final class UploadQueueManager: ObservableObject {
 
     func clearFailed() {
         let failed = items.filter { $0.state == .failed }
-        failed.forEach(cleanupLocalCopy)
+        failed.forEach { cleanupLocalCopy(for: $0) }
         items.removeAll { $0.state == .failed }
         persist()
     }
