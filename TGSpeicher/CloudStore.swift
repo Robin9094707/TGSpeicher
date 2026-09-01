@@ -329,12 +329,21 @@ final class CloudStore: ObservableObject {
         let mediaDate = (photoBackup?.creationDate ?? createdAt).formatted(date: .abbreviated, time: .shortened)
         let readableCaption = "TGSpeicher Backup • \(photoBackup?.fileName ?? url.lastPathComponent)\n\(mediaDate)\n\(markerText(for: manifest))"
         let caption: [String: Any] = ["@type": "formattedText", "text": readableCaption, "entities": []]
+        let generatedVideoThumbnail = descriptor.kind == "video"
+            ? TelegramVideoThumbnailGenerator.generate(for: url)
+            : nil
+        let videoThumbnail: Any
+        if let generatedVideoThumbnail {
+            videoThumbnail = generatedVideoThumbnail.input
+        } else {
+            videoThumbnail = NSNull()
+        }
         let content: [String: Any]
         if descriptor.kind == "video" {
             content = [
                 "@type": "inputMessageVideo",
                 "video": ["@type": "inputFileLocal", "path": url.path],
-                "thumbnail": NSNull(), "cover": NSNull(), "start_timestamp": 0,
+                "thumbnail": videoThumbnail, "cover": NSNull(), "start_timestamp": 0,
                 "added_sticker_file_ids": [], "duration": descriptor.duration,
                 "width": descriptor.width, "height": descriptor.height,
                 "supports_streaming": true, "caption": caption,
@@ -356,6 +365,11 @@ final class CloudStore: ObservableObject {
             "input_message_content": content
         ]
         telegram.sendMessageAwaitingFinal(request) { [weak self] response in
+            if let thumbnailURL = generatedVideoThumbnail?.url {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8) {
+                    try? FileManager.default.removeItem(at: thumbnailURL)
+                }
+            }
             guard let self else { return }
             if response["@type"] as? String == "error" {
                 if TelegramClient.retryAfterSeconds(response) != nil {

@@ -24,8 +24,8 @@ targets:
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_FILE: TGSpeicher/Info.plist
-        CURRENT_PROJECT_VERSION: 28
-        MARKETING_VERSION: 2.4.0
+        CURRENT_PROJECT_VERSION: 29
+        MARKETING_VERSION: 2.4.1
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
     scheme:
