@@ -73,6 +73,7 @@ final class UploadQueueManager: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var activeID: UUID?
     private var pendingCleanupItems: [UUID: DispatchWorkItem] = [:]
+    private var preparingPhotoResourceKeys = Set<String>()
 
     init(cloud: CloudStore, preferences: AppPreferences, network: TGNetworkMonitor) {
         self.cloud = cloud
@@ -81,6 +82,7 @@ final class UploadQueueManager: ObservableObject {
         load()
         recoverStagedUploads()
         recoverInterruptedUploads()
+        deduplicatePhotoBackupItems()
         persist()
         removeRecoveredStagingReceipts()
 
@@ -104,9 +106,21 @@ final class UploadQueueManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        cloud.$isRefreshing
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] refreshing in
+                if !refreshing { self?.processNextIfPossible() }
+            }
+            .store(in: &cancellables)
+
         cloud.telegram.$savedMessagesChatID
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.processNextIfPossible() }
+            .sink { [weak self] _ in
+                // Let CloudStore begin its catalog restore first. Otherwise a recovered
+                // queue entry could be resent before its existing cloud ID is visible.
+                DispatchQueue.main.async { self?.processNextIfPossible() }
+            }
             .store(in: &cancellables)
 
         Publishers.CombineLatest(network.$isConnected, network.$interfaceName)
@@ -178,6 +192,16 @@ final class UploadQueueManager: ObservableObject {
         tagIDs: [UUID] = [],
         photoBackup: PhotoBackupQueueMetadata? = nil
     ) {
+        if let resourceKey = photoBackup?.resourceKey {
+            let alreadyQueued = items.contains {
+                $0.photoBackup?.resourceKey == resourceKey
+            }
+            guard !alreadyQueued,
+                  preparingPhotoResourceKeys.insert(resourceKey).inserted else {
+                discardPreparedPhotoExport(url)
+                return
+            }
+        }
         isPreparingFiles = true
         lastError = nil
 
@@ -216,6 +240,9 @@ final class UploadQueueManager: ObservableObject {
                 }.value
 
                 items.append(prepared)
+                if let resourceKey = prepared.photoBackup?.resourceKey {
+                    preparingPhotoResourceKeys.remove(resourceKey)
+                }
                 isPreparingFiles = false
                 persist()
                 try? FileManager.default.removeItem(
@@ -225,6 +252,9 @@ final class UploadQueueManager: ObservableObject {
                 )
                 processNextIfPossible()
             } catch {
+                if let resourceKey = photoBackup?.resourceKey {
+                    preparingPhotoResourceKeys.remove(resourceKey)
+                }
                 isPreparingFiles = false
                 lastError = error.localizedDescription
             }
@@ -256,7 +286,6 @@ final class UploadQueueManager: ObservableObject {
         items[index].lastError = nil
         items[index].startedAt = nil
         items[index].completedAt = nil
-        items[index].cloudFileID = nil
         if automatic {
             items[index].automaticRetryCount = (items[index].automaticRetryCount ?? 0) + 1
         } else {
@@ -288,7 +317,8 @@ final class UploadQueueManager: ObservableObject {
     }
 
     private func processNextIfPossible() {
-        guard !isPaused, activeID == nil, cloud.upload == nil, !cloud.isCatalogSyncing else { return }
+        guard !isPaused, activeID == nil, cloud.upload == nil,
+              !cloud.isCatalogSyncing, !cloud.isRefreshing else { return }
         guard network.isConnected else { return }
         if preferences.wifiOnlyUploads && network.interfaceName != "Wi‑Fi" { return }
         guard cloud.telegram.savedMessagesChatID != nil else { return }
@@ -304,6 +334,17 @@ final class UploadQueueManager: ObservableObject {
             return
         }
 
+        let stableCloudFileID = items[index].cloudFileID ?? items[index].id
+        items[index].cloudFileID = stableCloudFileID
+        if cloud.index.files.contains(where: { $0.id == stableCloudFileID }) {
+            items[index].state = .completed
+            items[index].completedAt = Date()
+            items[index].lastError = nil
+            persist()
+            DispatchQueue.main.async { [weak self] in self?.processNextIfPossible() }
+            return
+        }
+
         items[index].state = .uploading
         items[index].startedAt = Date()
         items[index].lastError = nil
@@ -313,7 +354,9 @@ final class UploadQueueManager: ObservableObject {
         let expectedCloudFileID = cloud.uploadFile(
             url,
             folderID: items[index].folderID,
-            tagIDs: items[index].tagIDs
+            tagIDs: items[index].tagIDs,
+            stableFileID: stableCloudFileID,
+            sourceKey: items[index].photoBackup?.resourceKey
         )
         if let expectedCloudFileID {
             items[index].cloudFileID = expectedCloudFileID
@@ -358,8 +401,38 @@ final class UploadQueueManager: ObservableObject {
             } else {
                 items[index].state = .queued
                 items[index].startedAt = nil
-                items[index].cloudFileID = nil
             }
+        }
+    }
+
+    private func deduplicatePhotoBackupItems() {
+        let groups = Dictionary(grouping: items.filter { $0.photoBackup != nil }) {
+            $0.photoBackup!.resourceKey
+        }
+        var duplicateIDs = Set<UUID>()
+        for group in groups.values where group.count > 1 {
+            let ordered = group.sorted {
+                let lhs = queueRecoveryPriority($0.state)
+                let rhs = queueRecoveryPriority($1.state)
+                if lhs != rhs { return lhs < rhs }
+                return $0.createdAt < $1.createdAt
+            }
+            for duplicate in ordered.dropFirst() {
+                duplicateIDs.insert(duplicate.id)
+                cleanupLocalCopy(for: duplicate)
+            }
+        }
+        if !duplicateIDs.isEmpty {
+            items.removeAll { duplicateIDs.contains($0.id) }
+        }
+    }
+
+    private func queueRecoveryPriority(_ state: QueuedUpload.State) -> Int {
+        switch state {
+        case .completed: return 0
+        case .uploading: return 1
+        case .queued: return 2
+        case .failed: return 3
         }
     }
 
@@ -456,5 +529,16 @@ final class UploadQueueManager: ObservableObject {
 
     private func cancelPendingCleanup(for itemID: UUID) {
         pendingCleanupItems.removeValue(forKey: itemID)?.cancel()
+    }
+
+    private func discardPreparedPhotoExport(_ url: URL) {
+        let parent = url.deletingLastPathComponent().standardizedFileURL
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TGSpeicherPhotoBackup", isDirectory: true)
+            .standardizedFileURL
+        guard parent.path.hasPrefix(root.path + "/") else { return }
+        DispatchQueue.global(qos: .utility).async {
+            try? FileManager.default.removeItem(at: parent)
+        }
     }
 }

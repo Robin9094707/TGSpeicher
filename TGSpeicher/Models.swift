@@ -121,6 +121,7 @@ struct CloudFileEntry: Identifiable, Codable, Hashable {
     var mimeType: String?
     var tagIDs: [UUID]
     var sha256: String?
+    var sourceKey: String?
 
     init(
         id: UUID = UUID(),
@@ -132,7 +133,8 @@ struct CloudFileEntry: Identifiable, Codable, Hashable {
         chunks: [CloudChunk] = [],
         mimeType: String? = nil,
         tagIDs: [UUID] = [],
-        sha256: String? = nil
+        sha256: String? = nil,
+        sourceKey: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -144,10 +146,11 @@ struct CloudFileEntry: Identifiable, Codable, Hashable {
         self.mimeType = mimeType
         self.tagIDs = tagIDs
         self.sha256 = sha256
+        self.sourceKey = sourceKey
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, folderID, totalSize, createdAt, modifiedAt, chunks, mimeType, tagIDs, sha256
+        case id, name, folderID, totalSize, createdAt, modifiedAt, chunks, mimeType, tagIDs, sha256, sourceKey
     }
 
     init(from decoder: Decoder) throws {
@@ -162,6 +165,7 @@ struct CloudFileEntry: Identifiable, Codable, Hashable {
         mimeType = try c.decodeIfPresent(String.self, forKey: .mimeType)
         tagIDs = try c.decodeIfPresent([UUID].self, forKey: .tagIDs) ?? []
         sha256 = try c.decodeIfPresent(String.self, forKey: .sha256)
+        sourceKey = try c.decodeIfPresent(String.self, forKey: .sourceKey)
     }
 }
 
@@ -263,6 +267,7 @@ struct TGManifest: Codable {
     var createdAt: Date
     var tagIDs: [UUID]?
     var sha256: String?
+    var sourceKey: String?
 }
 
 extension Int64 {

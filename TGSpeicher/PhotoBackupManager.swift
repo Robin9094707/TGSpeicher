@@ -274,7 +274,14 @@ final class PhotoBackupManager: ObservableObject {
             var requiredCounts: [String: Int] = [:]
             var backedCounts: [String: Int] = [:]
             var fullyBackedAssetIDs = Set<String>()
+            var recoveredRecords: [String: PhotoBackupRecord] = [:]
             let cloudIDs = Set(cloudFiles.map(\.id))
+            var cloudFileBySourceKey: [String: CloudFileEntry] = [:]
+            for file in cloudFiles {
+                guard let sourceKey = file.sourceKey else { continue }
+                if let existing = cloudFileBySourceKey[sourceKey], existing.createdAt <= file.createdAt { continue }
+                cloudFileBySourceKey[sourceKey] = file
+            }
             newCandidates.reserveCapacity(max(assetCount, 1))
             newPendingCandidates.reserveCapacity(max(assetCount / 8, 1))
 
@@ -297,6 +304,18 @@ final class PhotoBackupManager: ObservableObject {
                     requiredForAsset += 1
                     if let record = knownRecords[candidate.resourceKey], cloudIDs.contains(record.cloudFileID) {
                         backedForAsset += 1
+                    } else if let recoveredFile = cloudFileBySourceKey[candidate.resourceKey] {
+                        recoveredRecords[candidate.resourceKey] = PhotoBackupRecord(
+                            resourceKey: candidate.resourceKey,
+                            assetLocalIdentifier: candidate.assetLocalIdentifier,
+                            resourceTypeRawValue: candidate.resourceTypeRawValue,
+                            fileName: candidate.fileName,
+                            mediaKind: candidate.mediaKind,
+                            cloudFileID: recoveredFile.id,
+                            creationDate: candidate.creationDate,
+                            uploadedAt: recoveredFile.createdAt
+                        )
+                        backedForAsset += 1
                     } else {
                         newPendingCandidates.append(candidate)
                     }
@@ -312,6 +331,12 @@ final class PhotoBackupManager: ObservableObject {
 
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.libraryScanGeneration == generation else { return }
+                if !recoveredRecords.isEmpty {
+                    for (key, record) in recoveredRecords where self.recordsByKey[key] == nil {
+                        self.recordsByKey[key] = record
+                    }
+                    self.persistLocalIndex()
+                }
                 self.candidates = newCandidates
                 self.pendingCandidates = newPendingCandidates
                 self.pendingCandidateCursor = 0
@@ -555,6 +580,15 @@ final class PhotoBackupManager: ObservableObject {
 
     private func exportToQueue(_ candidate: PhotoBackupCandidate, folderID: UUID) {
         let generation = backupRunGeneration
+        if let existing = queue.items.first(where: {
+            $0.photoBackup?.resourceKey == candidate.resourceKey
+        }) {
+            currentCandidate = candidate
+            currentFileName = candidate.fileName
+            currentQueueItemID = existing.id
+            handleQueue(queue.items)
+            return
+        }
         guard let asset = PHAsset.fetchAssets(
             withLocalIdentifiers: [candidate.assetLocalIdentifier],
             options: nil

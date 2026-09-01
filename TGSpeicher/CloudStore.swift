@@ -158,7 +158,13 @@ final class CloudStore: ObservableObject {
     // MARK: - Upload
 
     @discardableResult
-    func uploadFile(_ url: URL, folderID: UUID?, tagIDs: [UUID] = []) -> UUID? {
+    func uploadFile(
+        _ url: URL,
+        folderID: UUID?,
+        tagIDs: [UUID] = [],
+        stableFileID: UUID? = nil,
+        sourceKey: String? = nil
+    ) -> UUID? {
         guard upload == nil else {
             lastError = "Another upload is already running. TGSpeicher serializes uploads to protect the Telegram session."
             return nil
@@ -168,7 +174,10 @@ final class CloudStore: ObservableObject {
             return nil
         }
 
-        let fileID = UUID()
+        // Queue retries reuse the same ID. If the app is reopened after Telegram
+        // accepted a file, the persisted cloud entry can be recognized instead of
+        // creating a second logical upload with a fresh ID.
+        let fileID = stableFileID ?? UUID()
         let total = url.fileByteSize
         let createdAt = Date()
         let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
@@ -208,6 +217,7 @@ final class CloudStore: ObservableObject {
                         originalName: url.lastPathComponent,
                         folderID: folderID,
                         tagIDs: tagIDs,
+                        sourceKey: sourceKey,
                         mimeType: mimeType,
                         createdAt: createdAt,
                         collected: []
@@ -230,6 +240,7 @@ final class CloudStore: ObservableObject {
         originalName: String,
         folderID: UUID?,
         tagIDs: [UUID],
+        sourceKey: String?,
         mimeType: String?,
         createdAt: Date,
         collected: [CloudChunk]
@@ -245,7 +256,8 @@ final class CloudStore: ObservableObject {
                 chunks: collected.sorted { $0.index < $1.index },
                 mimeType: mimeType,
                 tagIDs: tagIDs,
-                sha256: prepared.sha256
+                sha256: prepared.sha256,
+                sourceKey: sourceKey
             )
             index.files.removeAll { $0.id == fileID }
             index.files.append(entry)
@@ -281,7 +293,8 @@ final class CloudStore: ObservableObject {
             chunkCount: chunk.count,
             createdAt: createdAt,
             tagIDs: tagIDs,
-            sha256: chunk.sha256
+            sha256: chunk.sha256,
+            sourceKey: sourceKey
         )
 
         let content: [String: Any] = [
@@ -337,6 +350,7 @@ final class CloudStore: ObservableObject {
                 originalName: originalName,
                 folderID: folderID,
                 tagIDs: tagIDs,
+                sourceKey: sourceKey,
                 mimeType: mimeType,
                 createdAt: createdAt,
                 collected: next
@@ -836,6 +850,7 @@ final class CloudStore: ObservableObject {
             var chunks: [CloudChunk]
             var mimeType: String?
             var tagIDs: [UUID]
+            var sourceKey: String?
         }
         var filesByID: [UUID: TempFile] = [:]
 
@@ -879,7 +894,8 @@ final class CloudStore: ObservableObject {
                 createdAt: manifest.createdAt,
                 chunks: [],
                 mimeType: mime,
-                tagIDs: manifest.tagIDs ?? []
+                tagIDs: manifest.tagIDs ?? [],
+                sourceKey: manifest.sourceKey
             )
             temp.chunks.removeAll { $0.index == part }
             temp.chunks.append(chunk)
@@ -897,7 +913,8 @@ final class CloudStore: ObservableObject {
                 modifiedAt: temp.createdAt,
                 chunks: temp.chunks.sorted { $0.index < $1.index },
                 mimeType: temp.mimeType,
-                tagIDs: temp.tagIDs
+                tagIDs: temp.tagIDs,
+                sourceKey: temp.sourceKey
             )
         }
         index.version = 2
