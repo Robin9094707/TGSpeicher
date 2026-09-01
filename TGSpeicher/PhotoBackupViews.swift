@@ -96,11 +96,13 @@ struct PhotoBackupView: View {
                 header
 
                 if manager.hasLibraryAccess {
+                    destinationCard
                     statistics
                     controls
                     if !manager.recentFailures.isEmpty { diagnostics }
                     CloudGallerySection(
                         model: galleryModel,
+                        cloud: cloud,
                         selectedCloudFileID: $selectedCloudFileID
                     )
                     .equatable()
@@ -178,7 +180,7 @@ struct PhotoBackupView: View {
         VStack(spacing: 14) {
             Image(systemName: "photo.badge.plus").font(.system(size: 44)).foregroundStyle(.blue)
             Text("Allow Photos access").font(.title3.bold())
-            Text("TGSpeicher can read your Photos library, fetch originals from iCloud when needed, and back them up one by one to your own Telegram Saved Messages.")
+            Text("TGSpeicher can read your Photos library, fetch media from iCloud when needed, and back it up as native photos and videos to your selected Telegram channel.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button("Allow Full Photos Access", systemImage: "checkmark.shield.fill") {
                 manager.requestFullAccess()
@@ -187,6 +189,42 @@ struct PhotoBackupView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 18)
+        .tgGlassCard()
+    }
+
+    private var destinationCard: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "megaphone.fill")
+                .foregroundStyle(.blue)
+                .frame(width: 34, height: 34)
+                .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Telegram Backup Channel").font(.subheadline.weight(.semibold))
+                Text(manager.selectedDestinationTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text("Photos and videos appear as native Telegram media")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Menu {
+                ForEach(manager.backupDestinations) { destination in
+                    Button {
+                        manager.selectBackupDestination(destination)
+                    } label: {
+                        Label(destination.title, systemImage: destination.id == manager.selectedDestinationID ? "checkmark.circle.fill" : "circle")
+                    }
+                }
+                Divider()
+                Button("Refresh Channels", systemImage: "arrow.clockwise") {
+                    manager.refreshBackupDestinations()
+                }
+            } label: {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(10)
+                    .background(.thinMaterial, in: Circle())
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .tgGlassCard()
     }
 
@@ -308,12 +346,13 @@ private struct PhotoMetric: View {
 
 private struct CloudGallerySection: View, Equatable {
     @ObservedObject var model: TGCloudGalleryModel
+    let cloud: CloudStore
     @Binding var selectedCloudFileID: UUID?
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var visibleLimit = 60
 
     static func == (lhs: CloudGallerySection, rhs: CloudGallerySection) -> Bool {
-        lhs.model === rhs.model
+        lhs.model === rhs.model && lhs.cloud === rhs.cloud
     }
 
     private var columns: [GridItem] {
@@ -359,7 +398,9 @@ private struct CloudGallerySection: View, Equatable {
                         } label: {
                             CloudPhotoTile(
                                 record: record,
-                                size: model.sizeByCloudFileID[record.cloudFileID]
+                                size: model.sizeByCloudFileID[record.cloudFileID],
+                                file: cloud.index.files.first(where: { $0.id == record.cloudFileID }),
+                                telegram: cloud.telegram
                             )
                         }
                         .buttonStyle(.plain)
@@ -384,12 +425,22 @@ private struct CloudGallerySection: View, Equatable {
 private struct CloudPhotoTile: View {
     let record: PhotoBackupRecord
     let size: Int64?
+    let file: CloudFileEntry?
+    let telegram: TelegramClient
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottomLeading) {
-                PhotoLibraryThumbnail(assetIdentifier: record.assetLocalIdentifier, mediaKind: record.mediaKind)
-                    .frame(width: geometry.size.width, height: geometry.size.height)
+                if PHAsset.fetchAssets(withLocalIdentifiers: [record.assetLocalIdentifier], options: nil).count > 0 {
+                    PhotoLibraryThumbnail(assetIdentifier: record.assetLocalIdentifier, mediaKind: record.mediaKind)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                } else if let file, (file.storageKind == "nativePhoto" || file.storageKind == "nativeVideo") {
+                    TelegramMediaThumbnailView(file: file, telegram: telegram, mediaKind: record.mediaKind)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                } else {
+                    Rectangle().fill(.secondary.opacity(0.12))
+                        .overlay { Image(systemName: record.mediaKind == "video" ? "video.fill" : "photo.fill").foregroundStyle(.secondary) }
+                }
 
                 LinearGradient(
                     colors: [.clear, .black.opacity(0.04), .black.opacity(0.72)],

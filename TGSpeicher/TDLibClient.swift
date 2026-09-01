@@ -7,6 +7,8 @@ final class TelegramClient: ObservableObject {
     @Published private(set) var authorizationStage: AuthorizationStage = .connecting
     @Published private(set) var accountName = "Telegram"
     @Published private(set) var savedMessagesChatID: Int64?
+    @Published private(set) var writableBackupChannels: [TelegramBackupDestination] = []
+    @Published private(set) var maxUploadBytes: Int64 = 2_000_000_000
     @Published private(set) var loginCodeInfo: LoginCodeInfo?
     @Published private(set) var debugLines: [String] = []
     @Published private(set) var lastAuthorizationStateName = "Not started"
@@ -332,6 +334,70 @@ final class TelegramClient: ObservableObject {
 
     func clearError() { lastError = nil }
 
+    /// Loads channels in which the signed-in user can publish. The result is intentionally
+    /// bounded; a manual refresh is cheap and avoids keeping thousands of chats in memory.
+    func refreshWritableBackupChannels() {
+        send([
+            "@type": "getChats",
+            "chat_list": ["@type": "chatListMain"],
+            "limit": 200
+        ]) { [weak self] response in
+            guard let self else { return }
+            let ids = (response["chat_ids"] as? [Any] ?? []).compactMap { Self.int64($0) }
+            self.loadWritableChannel(ids: ids, position: 0, collected: [])
+        }
+    }
+
+    private func loadWritableChannel(
+        ids: [Int64],
+        position: Int,
+        collected: [TelegramBackupDestination]
+    ) {
+        guard position < ids.count else {
+            writableBackupChannels = collected.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+            return
+        }
+        let chatID = ids[position]
+        send(["@type": "getChat", "chat_id": chatID]) { [weak self] chat in
+            guard let self else { return }
+            guard let type = chat["type"] as? [String: Any],
+                  type["@type"] as? String == "chatTypeSupergroup",
+                  let supergroupID = Self.int64(type["supergroup_id"]) else {
+                self.loadWritableChannel(ids: ids, position: position + 1, collected: collected)
+                return
+            }
+            self.send(["@type": "getSupergroup", "supergroup_id": supergroupID]) { [weak self] group in
+                guard let self else { return }
+                let isChannel = group["is_channel"] as? Bool ?? false
+                let status = group["status"] as? [String: Any]
+                let statusType = status?["@type"] as? String ?? ""
+                let rights = status?["rights"] as? [String: Any]
+                let canPost = statusType == "chatMemberStatusCreator" ||
+                    (statusType == "chatMemberStatusAdministrator" && (rights?["can_post_messages"] as? Bool ?? false))
+                var next = collected
+                if isChannel && canPost {
+                    next.append(TelegramBackupDestination(
+                        id: chatID,
+                        title: chat["title"] as? String ?? "Telegram Channel",
+                        isSavedMessages: false
+                    ))
+                }
+                self.loadWritableChannel(ids: ids, position: position + 1, collected: next)
+            }
+        }
+    }
+
+    private func loadUploadLimit() {
+        send(["@type": "getOption", "name": "max_file_size"]) { [weak self] response in
+            guard let self,
+                  response["@type"] as? String == "optionValueInteger",
+                  let value = Self.int64(response["value"]), value > 0 else { return }
+            self.maxUploadBytes = value
+        }
+    }
+
     static func retryAfterSeconds(_ response: [String: Any]) -> Int? {
         guard response["@type"] as? String == "error" else { return nil }
         if let code = int(response["code"]), code != 429 { return nil }
@@ -595,6 +661,8 @@ final class TelegramClient: ObservableObject {
     }
 
     private func loadSelfAndSavedMessages() {
+        loadUploadLimit()
+        refreshWritableBackupChannels()
         send(["@type": "getMe"]) { [weak self] me in
             guard let self else { return }
             if me["@type"] as? String == "error" { self.surfaceError(me); return }

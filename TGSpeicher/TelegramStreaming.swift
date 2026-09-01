@@ -20,7 +20,7 @@ private enum TGTelegramFileResolver {
             return
         }
 
-        guard let chatID = telegram.savedMessagesChatID, let messageID = chunk.telegramMessageID else {
+        guard let chatID = file.telegramChatID ?? telegram.savedMessagesChatID, let messageID = chunk.telegramMessageID else {
             completion(.failure(NSError(domain: "TGSpeicher.Stream", code: 2, userInfo: [NSLocalizedDescriptionKey: "The Telegram message reference for this media file is missing."])))
             return
         }
@@ -273,7 +273,11 @@ struct CloudMediaPreviewSheet: View {
         NavigationStack {
             Group {
                 if file.isTGVideo {
-                    OriginalVideoPreview(file: file, cloud: cloud)
+                    if file.storageKind == "nativeVideo" {
+                        TelegramVideoStreamView(file: file, telegram: cloud.telegram)
+                    } else {
+                        OriginalVideoPreview(file: file, cloud: cloud)
+                    }
                 } else if file.isTGImage {
                     TelegramCloudImageView(file: file, telegram: cloud.telegram)
                 } else {
@@ -391,7 +395,7 @@ private struct TelegramVideoStreamView: View {
     }
 }
 
-private struct TelegramCloudImageView: View {
+struct TelegramCloudImageView: View {
     @StateObject private var loader: TelegramCloudImageLoader
 
     init(file: CloudFileEntry, telegram: TelegramClient) {
@@ -415,6 +419,91 @@ private struct TelegramCloudImageView: View {
                 }
             }
         }
+        .onAppear { loader.load() }
+    }
+}
+
+@MainActor
+final class TelegramMediaThumbnailLoader: ObservableObject {
+    @Published private(set) var image: UIImage?
+    private static let cache = NSCache<NSString, UIImage>()
+    private let file: CloudFileEntry
+    private let telegram: TelegramClient
+
+    init(file: CloudFileEntry, telegram: TelegramClient) {
+        self.file = file
+        self.telegram = telegram
+        Self.cache.countLimit = 240
+        Self.cache.totalCostLimit = 48 * 1024 * 1024
+    }
+
+    func load() {
+        let key = file.id.uuidString as NSString
+        if let cached = Self.cache.object(forKey: key) { image = cached; return }
+        guard image == nil,
+              let chatID = file.telegramChatID ?? telegram.savedMessagesChatID,
+              let messageID = file.chunks.first?.telegramMessageID else { return }
+        telegram.send(["@type": "getMessage", "chat_id": chatID, "message_id": messageID]) { [weak self] message in
+            guard let self, let fileID = self.thumbnailFileID(message) else { return }
+            self.telegram.send([
+                "@type": "downloadFile", "file_id": fileID, "priority": 16,
+                "offset": 0, "limit": 0, "synchronous": true
+            ]) { [weak self] response in
+                guard let self,
+                      let local = response["local"] as? [String: Any],
+                      let path = local["path"] as? String,
+                      let image = UIImage(contentsOfFile: path) else { return }
+                let cost = Int(image.size.width * image.size.height * 4)
+                Self.cache.setObject(image, forKey: key, cost: cost)
+                self.image = image
+            }
+        }
+    }
+
+    private func thumbnailFileID(_ message: [String: Any]) -> Int? {
+        guard let content = message["content"] as? [String: Any] else { return nil }
+        if content["@type"] as? String == "messageVideo",
+           let video = content["video"] as? [String: Any],
+           let thumbnail = video["thumbnail"] as? [String: Any],
+           let file = thumbnail["file"] as? [String: Any] {
+            return TelegramClient.int(file["id"])
+        }
+        if content["@type"] as? String == "messagePhoto",
+           let photo = content["photo"] as? [String: Any],
+           let sizes = photo["sizes"] as? [[String: Any]] {
+            let ordered = sizes.sorted {
+                (TelegramClient.int($0["width"]) ?? 0) * (TelegramClient.int($0["height"]) ?? 0) <
+                (TelegramClient.int($1["width"]) ?? 0) * (TelegramClient.int($1["height"]) ?? 0)
+            }
+            let selected = ordered.first {
+                max(TelegramClient.int($0["width"]) ?? 0, TelegramClient.int($0["height"]) ?? 0) >= 320
+            } ?? ordered.last
+            return TelegramClient.int((selected?["photo"] as? [String: Any])?["id"])
+        }
+        return nil
+    }
+}
+
+struct TelegramMediaThumbnailView: View {
+    @StateObject private var loader: TelegramMediaThumbnailLoader
+    let mediaKind: String
+
+    init(file: CloudFileEntry, telegram: TelegramClient, mediaKind: String) {
+        _loader = StateObject(wrappedValue: TelegramMediaThumbnailLoader(file: file, telegram: telegram))
+        self.mediaKind = mediaKind
+    }
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.secondary.opacity(0.12))
+            if let image = loader.image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Image(systemName: mediaKind == "video" ? "video.fill" : "photo.fill")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .clipped()
         .onAppear { loader.load() }
     }
 }

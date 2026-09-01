@@ -8,6 +8,8 @@ struct PhotoBackupQueueMetadata: Codable, Hashable {
     let fileName: String
     let mediaKind: String
     let creationDate: Date?
+    var destinationChatID: Int64? = nil
+    var nativeMedia: NativeMediaUploadDescriptor? = nil
 }
 
 struct QueuedUpload: Identifiable, Codable, Hashable {
@@ -213,12 +215,18 @@ final class UploadQueueManager: ObservableObject {
                     let id = UUID()
                     let itemFolder = root.appendingPathComponent(id.uuidString, isDirectory: true)
                     try FileManager.default.createDirectory(at: itemFolder, withIntermediateDirectories: true)
-                    let preferredName = url.lastPathComponent.isEmpty ? "Upload.bin" : url.lastPathComponent
-                    let destination = itemFolder.appendingPathComponent(preferredName)
+                    let stagedName: String
+                    if photoBackup?.nativeMedia?.kind == "photo" {
+                        let original = photoBackup?.fileName ?? "Photo"
+                        stagedName = (original as NSString).deletingPathExtension + ".jpg"
+                    } else {
+                        stagedName = url.lastPathComponent.isEmpty ? "Upload.bin" : url.lastPathComponent
+                    }
+                    let destination = itemFolder.appendingPathComponent(stagedName)
                     let stagedItem = QueuedUpload(
                         id: id,
                         localPath: destination.path,
-                        displayName: preferredName,
+                        displayName: photoBackup?.fileName ?? stagedName,
                         folderID: folderID,
                         tagIDs: tagIDs,
                         byteSize: url.fileByteSize,
@@ -356,7 +364,10 @@ final class UploadQueueManager: ObservableObject {
             folderID: items[index].folderID,
             tagIDs: items[index].tagIDs,
             stableFileID: stableCloudFileID,
-            sourceKey: items[index].photoBackup?.resourceKey
+            sourceKey: items[index].photoBackup?.resourceKey,
+            destinationChatID: items[index].photoBackup?.destinationChatID,
+            nativeMedia: items[index].photoBackup?.nativeMedia,
+            photoBackup: items[index].photoBackup
         )
         if let expectedCloudFileID {
             items[index].cloudFileID = expectedCloudFileID

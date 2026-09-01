@@ -47,6 +47,23 @@ final class CloudStore: ObservableObject {
     var totalChunks: Int { index.files.reduce(0) { $0 + $1.chunks.count } }
     var catalogPointerMessageID: Int64? { index.catalogPointerMessageID }
 
+    func mergeRecoveredPhotoFiles(_ files: [CloudFileEntry]) {
+        guard !files.isEmpty else { return }
+        var changed = false
+        for file in files {
+            if let existing = index.files.firstIndex(where: { $0.id == file.id }) {
+                if index.files[existing].modifiedAt < file.modifiedAt {
+                    index.files[existing] = file
+                    changed = true
+                }
+            } else {
+                index.files.append(file)
+                changed = true
+            }
+        }
+        if changed { persistAndScheduleCatalog() }
+    }
+
     var tags: [CloudTag] {
         index.tags.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -163,14 +180,17 @@ final class CloudStore: ObservableObject {
         folderID: UUID?,
         tagIDs: [UUID] = [],
         stableFileID: UUID? = nil,
-        sourceKey: String? = nil
+        sourceKey: String? = nil,
+        destinationChatID: Int64? = nil,
+        nativeMedia: NativeMediaUploadDescriptor? = nil,
+        photoBackup: PhotoBackupQueueMetadata? = nil
     ) -> UUID? {
         guard upload == nil else {
             lastError = "Another upload is already running. TGSpeicher serializes uploads to protect the Telegram session."
             return nil
         }
-        guard telegram.savedMessagesChatID != nil else {
-            lastError = "Saved Messages is not ready yet."
+        guard let chatID = destinationChatID ?? telegram.savedMessagesChatID else {
+            lastError = "The Telegram backup destination is not ready yet."
             return nil
         }
 
@@ -191,6 +211,46 @@ final class CloudStore: ObservableObject {
             status: "Preparing and hashing…"
         )
 
+        if let nativeMedia,
+           (nativeMedia.kind != "photo" || total <= 10_000_000),
+           total <= telegram.maxUploadBytes {
+            sendNativeMedia(
+                url: url,
+                chatID: chatID,
+                fileID: fileID,
+                folderID: folderID,
+                tagIDs: tagIDs,
+                sourceKey: sourceKey,
+                descriptor: nativeMedia,
+                photoBackup: photoBackup,
+                createdAt: createdAt,
+                mimeType: mimeType
+            )
+        } else {
+            prepareDocumentUpload(
+                url: url,
+                chatID: chatID,
+                fileID: fileID,
+                folderID: folderID,
+                tagIDs: tagIDs,
+                sourceKey: sourceKey,
+                createdAt: createdAt,
+                mimeType: mimeType
+            )
+        }
+        return fileID
+    }
+
+    private func prepareDocumentUpload(
+        url: URL,
+        chatID: Int64,
+        fileID: UUID,
+        folderID: UUID?,
+        tagIDs: [UUID],
+        sourceKey: String?,
+        createdAt: Date,
+        mimeType: String?
+    ) {
         let accessed = url.startAccessingSecurityScopedResource()
         ioQueue.async { [weak self] in
             guard let self else { return }
@@ -220,7 +280,8 @@ final class CloudStore: ObservableObject {
                         sourceKey: sourceKey,
                         mimeType: mimeType,
                         createdAt: createdAt,
-                        collected: []
+                        collected: [],
+                        chatID: chatID
                     )
                 }
             } catch {
@@ -230,7 +291,113 @@ final class CloudStore: ObservableObject {
                 }
             }
         }
-        return fileID
+    }
+
+    private func sendNativeMedia(
+        url: URL,
+        chatID: Int64,
+        fileID: UUID,
+        folderID: UUID?,
+        tagIDs: [UUID],
+        sourceKey: String?,
+        descriptor: NativeMediaUploadDescriptor,
+        photoBackup: PhotoBackupQueueMetadata?,
+        createdAt: Date,
+        mimeType: String?
+    ) {
+        upload?.status = descriptor.kind == "video" ? "Sending streamable video…" : "Sending Telegram photo…"
+        UIApplication.shared.isIdleTimerDisabled = true
+        let manifest = TGManifest(
+            format: 3,
+            kind: descriptor.kind == "video" ? "nativeVideo" : "nativePhoto",
+            fileID: fileID,
+            folderID: folderID,
+            parentFolderID: nil,
+            name: photoBackup?.fileName ?? url.lastPathComponent,
+            originalSize: url.fileByteSize,
+            chunkIndex: 1,
+            chunkCount: 1,
+            createdAt: createdAt,
+            tagIDs: tagIDs,
+            sha256: nil,
+            sourceKey: sourceKey,
+            mediaKind: photoBackup?.mediaKind,
+            assetLocalIdentifier: photoBackup?.assetLocalIdentifier,
+            resourceTypeRawValue: photoBackup?.resourceTypeRawValue,
+            mediaCreationDate: photoBackup?.creationDate
+        )
+        let mediaDate = (photoBackup?.creationDate ?? createdAt).formatted(date: .abbreviated, time: .shortened)
+        let readableCaption = "TGSpeicher Backup • \(photoBackup?.fileName ?? url.lastPathComponent)\n\(mediaDate)\n\(markerText(for: manifest))"
+        let caption: [String: Any] = ["@type": "formattedText", "text": readableCaption, "entities": []]
+        let content: [String: Any]
+        if descriptor.kind == "video" {
+            content = [
+                "@type": "inputMessageVideo",
+                "video": ["@type": "inputFileLocal", "path": url.path],
+                "thumbnail": NSNull(), "cover": NSNull(), "start_timestamp": 0,
+                "added_sticker_file_ids": [], "duration": descriptor.duration,
+                "width": descriptor.width, "height": descriptor.height,
+                "supports_streaming": true, "caption": caption,
+                "show_caption_above_media": false, "self_destruct_type": NSNull(), "has_spoiler": false
+            ]
+        } else {
+            content = [
+                "@type": "inputMessagePhoto",
+                "photo": ["@type": "inputFileLocal", "path": url.path],
+                "thumbnail": NSNull(), "added_sticker_file_ids": [],
+                "width": descriptor.width, "height": descriptor.height,
+                "caption": caption, "show_caption_above_media": false,
+                "self_destruct_type": NSNull(), "has_spoiler": false
+            ]
+        }
+        let request: [String: Any] = [
+            "@type": "sendMessage", "chat_id": chatID, "topic_id": NSNull(),
+            "reply_to": NSNull(), "options": NSNull(), "reply_markup": NSNull(),
+            "input_message_content": content
+        ]
+        telegram.sendMessageAwaitingFinal(request) { [weak self] response in
+            guard let self else { return }
+            if response["@type"] as? String == "error" {
+                if TelegramClient.retryAfterSeconds(response) != nil {
+                    self.failUpload(self.friendlyTelegramError(response), chatID: chatID)
+                    return
+                }
+                // Unsupported codecs and Telegram-side media validation fall back to the
+                // durable chunked document format without losing the queue item.
+                self.upload?.status = "Media format unavailable • saving as file…"
+                self.prepareDocumentUpload(
+                    url: url, chatID: chatID, fileID: fileID, folderID: folderID,
+                    tagIDs: tagIDs, sourceKey: sourceKey, createdAt: createdAt, mimeType: mimeType
+                )
+                return
+            }
+            guard let messageID = TelegramClient.int64(response["id"]) else {
+                self.upload = nil
+                self.lastError = "Telegram confirmed the media but returned no final message ID."
+                UIApplication.shared.isIdleTimerDisabled = false
+                return
+            }
+            let info = self.mediaFileInfo(fromMessage: response)
+            let entry = CloudFileEntry(
+                id: fileID, name: photoBackup?.fileName ?? url.lastPathComponent,
+                folderID: folderID, totalSize: info.size > 0 ? info.size : url.fileByteSize,
+                createdAt: photoBackup?.creationDate ?? createdAt, modifiedAt: Date(),
+                chunks: [CloudChunk(index: 1, count: 1, telegramMessageID: messageID,
+                    telegramFileID: info.fileID, remoteUniqueID: info.uniqueID,
+                    size: info.size > 0 ? info.size : url.fileByteSize,
+                    storedName: url.lastPathComponent)],
+                mimeType: mimeType, tagIDs: tagIDs, sha256: nil, sourceKey: sourceKey,
+                telegramChatID: chatID,
+                storageKind: descriptor.kind == "video" ? "nativeVideo" : "nativePhoto"
+            )
+            self.index.files.removeAll { $0.id == fileID }
+            self.index.files.append(entry)
+            self.persist()
+            self.upload?.completedBytes = self.upload?.totalBytes ?? url.fileByteSize
+            self.upload = nil
+            UIApplication.shared.isIdleTimerDisabled = false
+            if photoBackup == nil { self.scheduleCatalogSync(delay: 15) }
+        }
     }
 
     private func sendPreparedChunks(
@@ -243,7 +410,8 @@ final class CloudStore: ObservableObject {
         sourceKey: String?,
         mimeType: String?,
         createdAt: Date,
-        collected: [CloudChunk]
+        collected: [CloudChunk],
+        chatID: Int64
     ) {
         guard position < prepared.chunks.count else {
             let entry = CloudFileEntry(
@@ -257,7 +425,9 @@ final class CloudStore: ObservableObject {
                 mimeType: mimeType,
                 tagIDs: tagIDs,
                 sha256: prepared.sha256,
-                sourceKey: sourceKey
+                sourceKey: sourceKey,
+                telegramChatID: chatID,
+                storageKind: "documentChunks"
             )
             index.files.removeAll { $0.id == fileID }
             index.files.append(entry)
@@ -268,12 +438,7 @@ final class CloudStore: ObservableObject {
             // Batch a continuous photo run into occasional remote checkpoints. The
             // local index remains durable immediately, while Telegram API traffic
             // stays low and never competes with the next file upload.
-            scheduleCatalogSync(delay: 15)
-            return
-        }
-
-        guard let chatID = telegram.savedMessagesChatID else {
-            failUpload("Saved Messages became unavailable.", prepared: prepared, uploadedChunks: collected)
+            if sourceKey == nil { scheduleCatalogSync(delay: 15) }
             return
         }
 
@@ -318,12 +483,12 @@ final class CloudStore: ObservableObject {
         telegram.sendMessageAwaitingFinal(request) { [weak self] response in
             guard let self else { return }
             if response["@type"] as? String == "error" {
-                self.failUpload(self.friendlyTelegramError(response), prepared: prepared, uploadedChunks: collected)
+                self.failUpload(self.friendlyTelegramError(response), prepared: prepared, uploadedChunks: collected, chatID: chatID)
                 return
             }
 
             guard let messageID = TelegramClient.int64(response["id"]) else {
-                self.failUpload("Telegram confirmed the upload but returned no final message ID.", prepared: prepared, uploadedChunks: collected)
+                self.failUpload("Telegram confirmed the upload but returned no final message ID.", prepared: prepared, uploadedChunks: collected, chatID: chatID)
                 return
             }
 
@@ -353,7 +518,8 @@ final class CloudStore: ObservableObject {
                 sourceKey: sourceKey,
                 mimeType: mimeType,
                 createdAt: createdAt,
-                collected: next
+                collected: next,
+                chatID: chatID
             )
         }
     }
@@ -361,11 +527,12 @@ final class CloudStore: ObservableObject {
     private func failUpload(
         _ message: String,
         prepared: PreparedFile? = nil,
-        uploadedChunks: [CloudChunk] = []
+        uploadedChunks: [CloudChunk] = [],
+        chatID: Int64? = nil
     ) {
         if let prepared { FileChunker.cleanup(prepared) }
         let messageIDs = uploadedChunks.compactMap(\.telegramMessageID)
-        if let chatID = telegram.savedMessagesChatID, !messageIDs.isEmpty {
+        if let chatID = chatID ?? telegram.savedMessagesChatID, !messageIDs.isEmpty {
             telegram.send([
                 "@type": "deleteMessages",
                 "chat_id": chatID,
@@ -778,6 +945,15 @@ final class CloudStore: ObservableObject {
             guard snapshot.schema == CatalogSnapshot.schema else { throw CocoaError(.fileReadCorruptFile) }
 
             var restoredFiles = snapshot.files
+            // A channel photo index may finish restoring before the Saved Messages
+            // catalog. Preserve those independently recovered native media entries.
+            for local in index.files where local.telegramChatID != nil {
+                if let position = restoredFiles.firstIndex(where: { $0.id == local.id }) {
+                    if restoredFiles[position].modifiedAt < local.modifiedAt { restoredFiles[position] = local }
+                } else {
+                    restoredFiles.append(local)
+                }
+            }
             // TDLib file IDs are local-session identifiers. Message IDs are the durable recovery key.
             for fileIndex in restoredFiles.indices {
                 for chunkIndex in restoredFiles[fileIndex].chunks.indices {
@@ -943,7 +1119,7 @@ final class CloudStore: ObservableObject {
             downloadResolvedChunks(resolved, position: 0, localURLs: [], file: file)
             return
         }
-        guard let chatID = telegram.savedMessagesChatID else { isDownloading = false; return }
+        guard let chatID = file.telegramChatID ?? telegram.savedMessagesChatID else { isDownloading = false; return }
         var chunk = ordered[position]
 
         guard let messageID = chunk.telegramMessageID else {
@@ -964,7 +1140,7 @@ final class CloudStore: ObservableObject {
                 self.lastError = self.friendlyTelegramError(message)
                 return
             }
-            let info = self.documentFileInfo(fromMessage: message)
+            let info = self.mediaFileInfo(fromMessage: message)
             guard let fileID = info.fileID else {
                 self.isDownloading = false
                 self.lastError = "Telegram message \(messageID) no longer contains chunk \(chunk.index)."
@@ -1048,7 +1224,7 @@ final class CloudStore: ObservableObject {
     }
 
     func deleteFileFromTelegram(_ file: CloudFileEntry) {
-        guard let chatID = telegram.savedMessagesChatID else { return }
+        guard let chatID = file.telegramChatID ?? telegram.savedMessagesChatID else { return }
         let ids = file.chunks.compactMap(\.telegramMessageID)
         guard !ids.isEmpty else {
             index.files.removeAll { $0.id == file.id }
@@ -1176,6 +1352,28 @@ final class CloudStore: ObservableObject {
         let size = TelegramClient.int64(file["size"]) ?? TelegramClient.int64(file["expected_size"]) ?? 0
         let uniqueID = (file["remote"] as? [String: Any])?["unique_id"] as? String
         return (fileID, uniqueID, size)
+    }
+
+    private func mediaFileInfo(fromMessage message: [String: Any]) -> (fileID: Int?, uniqueID: String?, size: Int64) {
+        guard let content = message["content"] as? [String: Any] else { return (nil, nil, 0) }
+        let file: [String: Any]?
+        switch content["@type"] as? String {
+        case "messageVideo":
+            file = ((content["video"] as? [String: Any])?["video"] as? [String: Any])
+        case "messagePhoto":
+            let sizes = ((content["photo"] as? [String: Any])?["sizes"] as? [[String: Any]]) ?? []
+            file = sizes.compactMap { $0["photo"] as? [String: Any] }.max {
+                (TelegramClient.int64($0["size"]) ?? 0) < (TelegramClient.int64($1["size"]) ?? 0)
+            }
+        default:
+            return documentFileInfo(fromMessage: message)
+        }
+        guard let file else { return (nil, nil, 0) }
+        return (
+            TelegramClient.int(file["id"]),
+            (file["remote"] as? [String: Any])?["unique_id"] as? String,
+            TelegramClient.int64(file["size"]) ?? TelegramClient.int64(file["expected_size"]) ?? 0
+        )
     }
 
     private func friendlyTelegramError(_ response: [String: Any]) -> String {

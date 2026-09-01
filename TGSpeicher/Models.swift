@@ -122,6 +122,10 @@ struct CloudFileEntry: Identifiable, Codable, Hashable {
     var tagIDs: [UUID]
     var sha256: String?
     var sourceKey: String?
+    /// Chat containing the actual media messages. Nil keeps older Saved Messages backups compatible.
+    var telegramChatID: Int64?
+    /// documentChunks, nativePhoto, or nativeVideo. Nil means the legacy document format.
+    var storageKind: String?
 
     init(
         id: UUID = UUID(),
@@ -134,7 +138,9 @@ struct CloudFileEntry: Identifiable, Codable, Hashable {
         mimeType: String? = nil,
         tagIDs: [UUID] = [],
         sha256: String? = nil,
-        sourceKey: String? = nil
+        sourceKey: String? = nil,
+        telegramChatID: Int64? = nil,
+        storageKind: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -147,10 +153,12 @@ struct CloudFileEntry: Identifiable, Codable, Hashable {
         self.tagIDs = tagIDs
         self.sha256 = sha256
         self.sourceKey = sourceKey
+        self.telegramChatID = telegramChatID
+        self.storageKind = storageKind
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, folderID, totalSize, createdAt, modifiedAt, chunks, mimeType, tagIDs, sha256, sourceKey
+        case id, name, folderID, totalSize, createdAt, modifiedAt, chunks, mimeType, tagIDs, sha256, sourceKey, telegramChatID, storageKind
     }
 
     init(from decoder: Decoder) throws {
@@ -166,6 +174,8 @@ struct CloudFileEntry: Identifiable, Codable, Hashable {
         tagIDs = try c.decodeIfPresent([UUID].self, forKey: .tagIDs) ?? []
         sha256 = try c.decodeIfPresent(String.self, forKey: .sha256)
         sourceKey = try c.decodeIfPresent(String.self, forKey: .sourceKey)
+        telegramChatID = try c.decodeIfPresent(Int64.self, forKey: .telegramChatID)
+        storageKind = try c.decodeIfPresent(String.self, forKey: .storageKind)
     }
 }
 
@@ -268,6 +278,23 @@ struct TGManifest: Codable {
     var tagIDs: [UUID]?
     var sha256: String?
     var sourceKey: String?
+    var mediaKind: String? = nil
+    var assetLocalIdentifier: String? = nil
+    var resourceTypeRawValue: Int? = nil
+    var mediaCreationDate: Date? = nil
+}
+
+struct TelegramBackupDestination: Identifiable, Codable, Hashable {
+    let id: Int64
+    var title: String
+    var isSavedMessages: Bool
+}
+
+struct NativeMediaUploadDescriptor: Codable, Hashable {
+    var kind: String
+    var width: Int
+    var height: Int
+    var duration: Int
 }
 
 extension Int64 {
