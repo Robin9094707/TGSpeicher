@@ -102,6 +102,7 @@ final class PhotoBackupManager: ObservableObject {
     private var snapshotMessageID: Int64?
     private var libraryScanGeneration = UUID()
     private var lastLibraryScanAt: Date?
+    private var backupRunGeneration = UUID()
 
     private static let autoResumeKey = "photos.autoResumeOnLaunch.v1"
     private static let backupEnabledKey = "photos.backupEnabled"
@@ -293,6 +294,7 @@ final class PhotoBackupManager: ObservableObject {
             requestFullAccess()
             return
         }
+        backupRunGeneration = UUID()
         persistSession(enabled: true, paused: false, nightMode: nightMode)
         isRunning = true
         isPaused = false
@@ -308,6 +310,7 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     func pauseBackup() {
+        backupRunGeneration = UUID()
         isPaused = true
         persistSession(enabled: true, paused: true, nightMode: false)
         statusText = currentQueueItemID == nil ? "Backup paused" : "Pausing after the current upload"
@@ -317,6 +320,7 @@ final class PhotoBackupManager: ObservableObject {
 
     func resumeBackup(nightMode: Bool = false) {
         guard hasLibraryAccess else { requestFullAccess(); return }
+        backupRunGeneration = UUID()
         isRunning = true
         isPaused = false
         isNightMode = nightMode
@@ -332,6 +336,7 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     func stopBackup() {
+        backupRunGeneration = UUID()
         isRunning = false
         isPaused = false
         currentFileName = nil
@@ -339,6 +344,15 @@ final class PhotoBackupManager: ObservableObject {
         leaveNightMode()
         statusText = "Backup stopped"
         syncIndexSoon(delay: 0.1)
+    }
+
+    func activateRestoredNightModeIfNeeded() {
+        guard defaults.bool(forKey: Self.backupEnabledKey),
+              !defaults.bool(forKey: Self.pausedKey),
+              defaults.bool(forKey: Self.nightModeKey) else { return }
+        isNightMode = true
+        applyNightMode()
+        if !isRunning { statusText = "Restoring Night Backup…" }
     }
 
     func cloudFile(for record: PhotoBackupRecord) -> CloudFileEntry? {
@@ -483,6 +497,7 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     private func exportToQueue(_ candidate: PhotoBackupCandidate, folderID: UUID) {
+        let generation = backupRunGeneration
         guard let asset = PHAsset.fetchAssets(
             withLocalIdentifiers: [candidate.assetLocalIdentifier],
             options: nil
@@ -517,14 +532,24 @@ final class PhotoBackupManager: ObservableObject {
         options.isNetworkAccessAllowed = true
         options.progressHandler = { [weak self] progress in
             DispatchQueue.main.async {
-                self?.iCloudProgress = progress
-                self?.statusText = progress < 1 ? "Downloading original from iCloud • \(Int(progress * 100))%" : "Preparing Telegram upload…"
+                guard let self, self.backupRunGeneration == generation else { return }
+                self.iCloudProgress = progress
+                self.statusText = progress < 1 ? "Downloading original from iCloud • \(Int(progress * 100))%" : "Preparing Telegram upload…"
             }
         }
 
         PHAssetResourceManager.default().writeData(for: resource, toFile: destination, options: options) { [weak self] error in
             DispatchQueue.main.async {
                 guard let self else { return }
+                guard self.backupRunGeneration == generation, self.isRunning, !self.isPaused else {
+                    try? FileManager.default.removeItem(at: destination.deletingLastPathComponent())
+                    if self.currentExportURL == destination { self.currentExportURL = nil }
+                    self.isExportingFromPhotos = false
+                    self.iCloudProgress = 0
+                    self.currentCandidate = nil
+                    if self.isRunning && !self.isPaused { self.processNextIfPossible() }
+                    return
+                }
                 self.isExportingFromPhotos = false
                 if let error {
                     if let currentExportURL = self.currentExportURL {
@@ -655,6 +680,9 @@ final class PhotoBackupManager: ObservableObject {
             return
         }
         guard scheduledRetryIDs.insert(item.id).inserted else { return }
+        // Transient Telegram/iCloud failures stay visible in Transfers and are retried
+        // quietly. Only a terminal failure after all retries interrupts the user.
+        cloud.lastError = nil
         let delay = min(60.0, pow(2.0, Double(attempts + 1)))
         statusText = "Telegram upload interrupted • retrying in \(Int(delay))s"
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in

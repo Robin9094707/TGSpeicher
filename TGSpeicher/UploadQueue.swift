@@ -95,6 +95,14 @@ final class UploadQueueManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        cloud.$isCatalogSyncing
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] syncing in
+                if !syncing { self?.processNextIfPossible() }
+            }
+            .store(in: &cancellables)
+
         cloud.telegram.$savedMessagesChatID
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.processNextIfPossible() }
@@ -254,14 +262,14 @@ final class UploadQueueManager: ObservableObject {
 
     func remove(_ item: QueuedUpload) {
         guard item.id != activeID else { return }
-        cleanupLocalCopy(for: item)
+        cleanupLocalCopy(for: item, after: item.state == .completed ? 8 : 0)
         items.removeAll { $0.id == item.id }
         persist()
     }
 
     func clearCompleted() {
         let completed = items.filter { $0.state == .completed }
-        completed.forEach(cleanupLocalCopy)
+        completed.forEach { cleanupLocalCopy(for: $0, after: 8) }
         items.removeAll { $0.state == .completed }
         persist()
     }
@@ -274,7 +282,7 @@ final class UploadQueueManager: ObservableObject {
     }
 
     private func processNextIfPossible() {
-        guard !isPaused, activeID == nil, cloud.upload == nil else { return }
+        guard !isPaused, activeID == nil, cloud.upload == nil, !cloud.isCatalogSyncing else { return }
         guard network.isConnected else { return }
         if preferences.wifiOnlyUploads && network.interfaceName != "Wi‑Fi" { return }
         guard cloud.telegram.savedMessagesChatID != nil else { return }
@@ -316,7 +324,7 @@ final class UploadQueueManager: ObservableObject {
             items[index].completedAt = Date()
             items[index].lastError = nil
             items[index].cloudFileID = uploadedFile.id
-            cleanupLocalCopy(for: items[index])
+            cleanupLocalCopy(for: items[index], after: 8)
         } else {
             items[index].state = .failed
             items[index].lastError = cloud.lastError ?? "Upload did not complete. You can retry it from Transfers."
@@ -417,9 +425,16 @@ final class UploadQueueManager: ObservableObject {
         try? data.write(to: url, options: [.atomic])
     }
 
-    private func cleanupLocalCopy(for item: QueuedUpload) {
+    private func cleanupLocalCopy(for item: QueuedUpload, after delay: TimeInterval = 0) {
         let url = URL(fileURLWithPath: item.localPath)
-        let parent = url.deletingLastPathComponent()
-        try? FileManager.default.removeItem(at: parent)
+        let parent = url.deletingLastPathComponent().standardizedFileURL
+        let root = queueRootURL.standardizedFileURL
+        guard parent.path.hasPrefix(root.path + "/") else { return }
+        let remove: () -> Void = { try? FileManager.default.removeItem(at: parent) }
+        if delay > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: remove)
+        } else {
+            remove()
+        }
     }
 }

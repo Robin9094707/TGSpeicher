@@ -266,18 +266,18 @@ final class TelegramCloudImageLoader: ObservableObject {
 
 struct CloudMediaPreviewSheet: View {
     let file: CloudFileEntry
-    let telegram: TelegramClient
+    @ObservedObject var cloud: CloudStore
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Group {
                 if file.isTGVideo {
-                    TelegramVideoStreamView(file: file, telegram: telegram)
+                    OriginalVideoPreview(file: file, cloud: cloud)
                 } else if file.isTGImage {
-                    TelegramCloudImageView(file: file, telegram: telegram)
+                    TelegramCloudImageView(file: file, telegram: cloud.telegram)
                 } else {
-                    ContentUnavailableView("No cloud stream", systemImage: "doc", description: Text("Use Download + Preview for this file type."))
+                    ContentUnavailableView("No media preview", systemImage: "doc", description: Text("Use Download + Preview for this file type."))
                 }
             }
             .navigationTitle(file.name)
@@ -289,6 +289,84 @@ struct CloudMediaPreviewSheet: View {
                 }
             }
         }
+    }
+}
+
+private struct OriginalVideoPreview: View {
+    let file: CloudFileEntry
+    @ObservedObject var cloud: CloudStore
+    @State private var localURL: URL?
+    @State private var startedDownload = false
+    @State private var waitingForDownloadSlot = false
+
+    var body: some View {
+        Group {
+            if let localURL {
+                QuickLookPreview(url: localURL)
+                    .ignoresSafeArea(edges: .bottom)
+            } else if startedDownload && cloud.isDownloading {
+                VStack(spacing: 14) {
+                    ProgressView()
+                    Text("Preparing original video…").font(.headline)
+                    Text(file.chunks.count > 1
+                         ? "Downloading \(file.chunks.count) Telegram parts, rebuilding the original, and verifying it before playback."
+                         : "Downloading the original Telegram document for reliable playback.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(28)
+            } else if waitingForDownloadSlot {
+                VStack(spacing: 14) {
+                    ProgressView()
+                    Text("Waiting for the active download…")
+                        .font(.headline)
+                    Text("The video will start preparing automatically next.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("Video not prepared", systemImage: "play.slash")
+                } description: {
+                    Text("TGSpeicher could not prepare the original video for playback.")
+                } actions: {
+                    Button("Try Again", systemImage: "arrow.clockwise") {
+                        startedDownload = false
+                        beginPreparing()
+                    }
+                }
+            }
+        }
+        .task { beginPreparing() }
+        .onChange(of: cloud.isDownloading) { _, downloading in
+            guard !downloading else { return }
+            if startedDownload,
+               cloud.lastDownloadedFileID == file.id,
+               let exported = cloud.lastExportURL,
+               FileManager.default.fileExists(atPath: exported.path) {
+                localURL = exported
+            } else if waitingForDownloadSlot {
+                waitingForDownloadSlot = false
+                beginPreparing()
+            }
+        }
+    }
+
+    private func beginPreparing() {
+        let preferred = cloud.lastDownloadedFileID == file.id ? cloud.lastExportURL : nil
+        if let cached = TGLocalDownloads.matching(file, preferred: preferred) {
+            localURL = cached
+            return
+        }
+        guard !startedDownload else { return }
+        guard !cloud.isDownloading else {
+            waitingForDownloadSlot = true
+            return
+        }
+        waitingForDownloadSlot = false
+        startedDownload = true
+        cloud.downloadAndReassemble(file)
     }
 }
 

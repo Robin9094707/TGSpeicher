@@ -30,7 +30,7 @@ The iOS client is a clean native implementation. It does not embed a Tauri deskt
 
 ## Build an IPA
 
-Every push to `main` runs `.github/workflows/build-ipa.yml` on a GitHub-hosted macOS runner. The workflow generates the Xcode project with XcodeGen, resolves TDLibFramework, builds a Release app for a generic iOS device with code signing disabled, packages `TGSpeicher-v2.3.0-unsigned.ipa`, and uploads it as an Actions artifact.
+Every push to `main` runs `.github/workflows/build-ipa.yml` on a GitHub-hosted macOS runner. The workflow generates the Xcode project with XcodeGen, resolves TDLibFramework, builds a Release app for a generic iOS device with code signing disabled, packages `TGSpeicher-v2.3.1-unsigned.ipa`, and uploads it as an Actions artifact.
 
 The artifact is intentionally **unsigned**. A sideload tool/signing service must sign it for your Apple ID or certificate before installation.
 
@@ -45,4 +45,4 @@ On first launch, enter the API ID and API hash created for your own Telegram app
 - Devices: iPhone and iPad
 - Storage engine: TDLib + Telegram Saved Messages
 
-Build target: TGSpeicher 2.3.0.
+Build target: TGSpeicher 2.3.1.

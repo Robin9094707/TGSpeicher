@@ -12,6 +12,7 @@ final class CloudStore: ObservableObject {
     @Published private(set) var catalogStatus = "Local index"
     @Published private(set) var localInboxFiles: [URL] = []
     @Published var lastExportURL: URL?
+    @Published private(set) var lastDownloadedFileID: UUID?
     @Published var lastError: String?
 
     let telegram: TelegramClient
@@ -19,13 +20,17 @@ final class CloudStore: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var catalogWorkItem: DispatchWorkItem?
     private var catalogNeedsAnotherSync = false
+    private var lastCatalogSyncAt = Date.distantPast
 
     private let maxChunkBytes: Int64 = 1_900_000_000
+    private let catalogMinimumInterval: TimeInterval = 45
+    private let telegramFileReleaseDelay: TimeInterval = 8
     private let snapshotMarker = "#TGSpeicherCatalogSnapshotV2"
 
     init(telegram: TelegramClient) {
         self.telegram = telegram
         loadLocalIndex()
+        lastCatalogSyncAt = index.lastSyncedAt ?? .distantPast
         prepareFilesIntegration()
         refreshLocalInbox()
 
@@ -243,10 +248,13 @@ final class CloudStore: ObservableObject {
             index.files.removeAll { $0.id == fileID }
             index.files.append(entry)
             persist()
-            FileChunker.cleanup(prepared)
+            cleanupPreparedFileAfterTelegramRelease(prepared)
             upload = nil
             UIApplication.shared.isIdleTimerDisabled = false
-            scheduleCatalogSync(delay: 0.5)
+            // Batch a continuous photo run into occasional remote checkpoints. The
+            // local index remains durable immediately, while Telegram API traffic
+            // stays low and never competes with the next file upload.
+            scheduleCatalogSync(delay: 15)
             return
         }
 
@@ -357,14 +365,31 @@ final class CloudStore: ObservableObject {
     // MARK: - Catalog v2
 
     func syncCatalogNow() {
+        beginCatalogSync(force: true)
+    }
+
+    private func beginCatalogSync(force: Bool) {
         guard let chatID = telegram.savedMessagesChatID else { return }
+        guard upload == nil else {
+            catalogNeedsAnotherSync = true
+            scheduleCatalogSync(delay: 8)
+            return
+        }
         if isCatalogSyncing {
             catalogNeedsAnotherSync = true
             return
         }
+        if !force {
+            let elapsed = Date().timeIntervalSince(lastCatalogSyncAt)
+            if elapsed < catalogMinimumInterval {
+                scheduleCatalogSync(delay: max(2, catalogMinimumInterval - elapsed))
+                return
+            }
+        }
 
         catalogWorkItem?.cancel()
         isCatalogSyncing = true
+        catalogNeedsAnotherSync = false
         catalogStatus = "Saving catalog…"
         let revision = max(index.revision + 1, Int64(Date().timeIntervalSince1970))
         let snapshot = CatalogSnapshot(
@@ -375,61 +400,87 @@ final class CloudStore: ObservableObject {
             tags: index.tags
         )
 
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(snapshot)
-            writeLocalCatalogBackup(data)
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("TGSpeicher-Catalog-v2-r\(revision).json")
-            try data.write(to: url, options: [.atomic])
+        let marker = snapshotMarker
+        let backupURL = catalogBackupFolderURL?.appendingPathComponent("TGSpeicher-Catalog-latest.json")
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TGSpeicher-Catalog-v2-r\(revision)-\(UUID().uuidString).json")
 
-            let content: [String: Any] = [
-                "@type": "inputMessageDocument",
-                "document": ["@type": "inputFileLocal", "path": url.path],
-                "thumbnail": NSNull(),
-                "disable_content_type_detection": true,
-                "caption": [
-                    "@type": "formattedText",
-                    "text": "\(snapshotMarker) revision=\(revision)",
-                    "entities": []
-                ]
-            ]
-            let request: [String: Any] = [
-                "@type": "sendMessage",
-                "chat_id": chatID,
-                "topic_id": NSNull(),
-                "reply_to": NSNull(),
-                "options": NSNull(),
-                "reply_markup": NSNull(),
-                "input_message_content": content
-            ]
+        // Encoding a catalog with many thousands of entries must never block SwiftUI.
+        ioQueue.async { [weak self] in
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(snapshot)
+                if let backupURL {
+                    try? FileManager.default.createDirectory(at: backupURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try? data.write(to: backupURL, options: [.atomic])
+                }
+                try data.write(to: url, options: [.atomic])
 
-            telegram.sendMessageAwaitingFinal(request) { [weak self] response in
-                try? FileManager.default.removeItem(at: url)
-                guard let self else { return }
-                if response["@type"] as? String == "error" {
-                    self.finishCatalogFailure(response)
-                    return
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    guard self.upload == nil else {
+                        try? FileManager.default.removeItem(at: url)
+                        self.isCatalogSyncing = false
+                        self.catalogNeedsAnotherSync = true
+                        self.scheduleCatalogSync(delay: 8)
+                        return
+                    }
+                    let content: [String: Any] = [
+                        "@type": "inputMessageDocument",
+                        "document": ["@type": "inputFileLocal", "path": url.path],
+                        "thumbnail": NSNull(),
+                        "disable_content_type_detection": true,
+                        "caption": [
+                            "@type": "formattedText",
+                            "text": "\(marker) revision=\(revision)",
+                            "entities": []
+                        ]
+                    ]
+                    let request: [String: Any] = [
+                        "@type": "sendMessage",
+                        "chat_id": chatID,
+                        "topic_id": NSNull(),
+                        "reply_to": NSNull(),
+                        "options": NSNull(),
+                        "reply_markup": NSNull(),
+                        "input_message_content": content
+                    ]
+
+                    self.telegram.sendMessageAwaitingFinal(request) { [weak self] response in
+                        self?.removeTemporaryFileAfterTelegramRelease(url)
+                        guard let self else { return }
+                        if response["@type"] as? String == "error" {
+                            self.finishCatalogFailure(response)
+                            return
+                        }
+                        guard let snapshotID = TelegramClient.int64(response["id"]) else {
+                            self.finishCatalogFailure(["@type": "error", "message": "Catalog snapshot has no final message ID."])
+                            return
+                        }
+                        self.updateCatalogPointer(chatID: chatID, revision: revision, snapshotMessageID: snapshotID)
+                    }
                 }
-                guard let snapshotID = TelegramClient.int64(response["id"]) else {
-                    self.finishCatalogFailure(["@type": "error", "message": "Catalog snapshot has no final message ID."])
-                    return
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.isCatalogSyncing = false
+                    self.catalogStatus = "Catalog error"
+                    self.lastError = error.localizedDescription
                 }
-                self.updateCatalogPointer(chatID: chatID, revision: revision, snapshotMessageID: snapshotID)
             }
-        } catch {
-            isCatalogSyncing = false
-            catalogStatus = "Catalog error"
-            lastError = error.localizedDescription
         }
     }
 
     private func scheduleCatalogSync(delay: TimeInterval = 1.5) {
         catalogWorkItem?.cancel()
         catalogStatus = "Catalog update pending"
-        let item = DispatchWorkItem { [weak self] in self?.syncCatalogNow() }
+        if isCatalogSyncing {
+            catalogNeedsAnotherSync = true
+            return
+        }
+        let item = DispatchWorkItem { [weak self] in self?.beginCatalogSync(force: false) }
         catalogWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
@@ -488,18 +539,26 @@ final class CloudStore: ObservableObject {
         index.catalogPointerMessageID = pointerID
         index.catalogSnapshotMessageID = snapshotID
         index.lastSyncedAt = Date()
+        lastCatalogSyncAt = index.lastSyncedAt ?? Date()
         persist()
         isCatalogSyncing = false
         catalogStatus = "Catalog synced • r\(revision)"
 
         if catalogNeedsAnotherSync {
             catalogNeedsAnotherSync = false
-            scheduleCatalogSync(delay: 0.7)
+            scheduleCatalogSync(delay: catalogMinimumInterval)
         }
     }
 
     private func finishCatalogFailure(_ response: [String: Any]) {
         isCatalogSyncing = false
+        let rawMessage = response["message"] as? String ?? ""
+        if rawMessage.localizedCaseInsensitiveContains("real file path") {
+            catalogStatus = "Catalog retry pending"
+            catalogNeedsAnotherSync = true
+            scheduleCatalogSync(delay: 8)
+            return
+        }
         if let wait = TelegramClient.retryAfterSeconds(response) {
             catalogStatus = "Rate limited • retry in \(wait)s"
             catalogNeedsAnotherSync = true
@@ -956,6 +1015,7 @@ final class CloudStore: ObservableObject {
                 }
                 DispatchQueue.main.async {
                     self.lastExportURL = destination
+                    self.lastDownloadedFileID = file.id
                     self.isDownloading = false
                     self.refreshLocalInbox()
                 }
@@ -1041,6 +1101,19 @@ final class CloudStore: ObservableObject {
     private func persistAndScheduleCatalog() {
         persist()
         scheduleCatalogSync()
+    }
+
+    private func cleanupPreparedFileAfterTelegramRelease(_ prepared: PreparedFile) {
+        guard prepared.temporaryDirectory != nil else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + telegramFileReleaseDelay) {
+            FileChunker.cleanup(prepared)
+        }
+    }
+
+    private func removeTemporaryFileAfterTelegramRelease(_ url: URL) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + telegramFileReleaseDelay) {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     private func inputText(_ text: String) -> [String: Any] {

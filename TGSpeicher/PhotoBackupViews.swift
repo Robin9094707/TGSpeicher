@@ -78,17 +78,15 @@ struct PhotoBackupView: View {
     @ObservedObject var manager: PhotoBackupManager
     let cloud: CloudStore
     @ObservedObject var telemetry: TelegramTransferTelemetry
-    let telegram: TelegramClient
 
     @StateObject private var galleryModel: TGCloudGalleryModel
     @State private var selectedCloudFileID: UUID?
     @State private var confirmDeleteLocal = false
 
-    init(manager: PhotoBackupManager, cloud: CloudStore, telemetry: TelegramTransferTelemetry, telegram: TelegramClient) {
+    init(manager: PhotoBackupManager, cloud: CloudStore, telemetry: TelegramTransferTelemetry) {
         self.manager = manager
         self.cloud = cloud
         self.telemetry = telemetry
-        self.telegram = telegram
         _galleryModel = StateObject(wrappedValue: TGCloudGalleryModel(manager: manager, cloud: cloud))
     }
 
@@ -129,14 +127,8 @@ struct PhotoBackupView: View {
         )) {
             if let selectedCloudFileID,
                let file = cloud.index.files.first(where: { $0.id == selectedCloudFileID }) {
-                CloudMediaPreviewSheet(file: file, telegram: telegram)
+                CloudMediaPreviewSheet(file: file, cloud: cloud)
             }
-        }
-        .fullScreenCover(isPresented: Binding(
-            get: { manager.isNightMode },
-            set: { if !$0 { manager.pauseBackup() } }
-        )) {
-            NightPhotoBackupScreen(manager: manager, cloud: cloud, telemetry: telemetry)
         }
         .confirmationDialog(
             "Remove fully backed-up items from the iPhone Photos library?",
@@ -518,7 +510,7 @@ private struct GalleryLoadSentinel: View {
     }
 }
 
-private struct NightPhotoBackupScreen: View {
+struct NightPhotoBackupScreen: View {
     @ObservedObject var manager: PhotoBackupManager
     @ObservedObject var cloud: CloudStore
     @ObservedObject var telemetry: TelegramTransferTelemetry

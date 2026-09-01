@@ -32,7 +32,7 @@ struct FileDetailV2: View {
                         Text(file.totalSize.byteCountString).foregroundStyle(.secondary)
 
                         if file.isTGImage || file.isTGVideo {
-                            Button(file.isTGVideo ? "Stream from Telegram" : "Cloud Preview", systemImage: file.isTGVideo ? "play.circle.fill" : "photo.fill") {
+                            Button(file.isTGVideo ? "Open Original Video" : "Cloud Preview", systemImage: file.isTGVideo ? "play.circle.fill" : "photo.fill") {
                                 showingCloudPreview = true
                             }
                             .buttonStyle(.borderedProminent)
@@ -173,7 +173,7 @@ struct FileDetailV2: View {
             if let localURL { QuickLookPreviewSheet(url: localURL) }
         }
         .sheet(isPresented: $showingCloudPreview) {
-            if let file { CloudMediaPreviewSheet(file: file, telegram: cloud.telegram) }
+            if let file { CloudMediaPreviewSheet(file: file, cloud: cloud) }
         }
         .confirmationDialog("Delete this file from Telegram Saved Messages?", isPresented: $confirmDelete, titleVisibility: .visible) {
             if let file { Button("Delete from Telegram", role: .destructive) { cloud.deleteFileFromTelegram(file) } }

@@ -81,10 +81,12 @@ enum TGLocalDownloads {
     static func matching(_ file: CloudFileEntry, preferred: URL? = nil) -> URL? {
         if let preferred,
            FileManager.default.fileExists(atPath: preferred.path),
-           preferred.lastPathComponent == file.name {
+           preferred.fileByteSize == file.totalSize {
             return preferred
         }
-        return allFiles().first { $0.lastPathComponent == file.name }
+        return allFiles().first {
+            $0.lastPathComponent == file.name && $0.fileByteSize == file.totalSize
+        }
     }
 
     static func totalBytes() -> Int64 {

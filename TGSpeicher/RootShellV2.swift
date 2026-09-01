@@ -87,6 +87,16 @@ struct V2RootView: View {
         } message: {
             Text(cloud.lastError ?? queue.lastError ?? remoteImporter.lastError ?? proxy.lastError ?? photoBackup.lastError ?? "Unknown error")
         }
+        .fullScreenCover(isPresented: Binding(
+            get: { photoBackup.isNightMode && telegram.authorizationStage == .ready },
+            set: { if !$0, photoBackup.isNightMode { photoBackup.pauseBackup() } }
+        )) {
+            NightPhotoBackupScreen(manager: photoBackup, cloud: cloud, telemetry: telemetry)
+                .interactiveDismissDisabled()
+        }
+        .onAppear {
+            photoBackup.activateRestoredNightModeIfNeeded()
+        }
     }
 }
 
@@ -118,7 +128,7 @@ struct DriveShellV2: View {
             .tabItem { Label("Drive", systemImage: "externaldrive.fill.badge.icloud") }
 
             NavigationStack {
-                PhotoBackupView(manager: photoBackup, cloud: cloud, telemetry: telemetry, telegram: telegram)
+                PhotoBackupView(manager: photoBackup, cloud: cloud, telemetry: telemetry)
             }
             .tabItem { Label("Photos", systemImage: "photo.stack.fill") }
 
