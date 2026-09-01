@@ -23,8 +23,8 @@ struct FileDetailV2: View {
                 VStack(spacing: 12) {
                     VStack(spacing: 11) {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.blue.opacity(0.12))
-                            Image(systemName: file.symbol).font(.system(size: 44)).foregroundStyle(.blue)
+                            RoundedRectangle(cornerRadius: 22, style: .continuous).fill(file.tint.opacity(0.12))
+                            Image(systemName: file.symbol).font(.system(size: 44)).foregroundStyle(file.tint)
                         }
                         .frame(width: 78, height: 78)
 
@@ -73,7 +73,7 @@ struct FileDetailV2: View {
                         Label("Information", systemImage: "info.circle.fill").font(.headline)
                         LabeledContent("Size", value: file.totalSize.byteCountString)
                         LabeledContent("Chunks", value: "\(file.chunks.count)")
-                        LabeledContent("Type", value: file.mimeType ?? (file.fileExtension.isEmpty ? "Unknown" : file.fileExtension.uppercased()))
+                        LabeledContent("Type", value: file.typeLabel)
                         LabeledContent("Created", value: file.createdAt.formatted(date: .abbreviated, time: .shortened))
                         LabeledContent("Modified", value: file.modifiedAt.formatted(date: .abbreviated, time: .shortened))
                         LabeledContent("Cloud source", value: "Telegram Saved Messages")

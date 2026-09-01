@@ -12,14 +12,22 @@ private final class TGCloudGalleryModel: ObservableObject {
     private weak var cloud: CloudStore?
     private var cancellables = Set<AnyCancellable>()
     private var generation = 0
+    private var representedAssetIDs = Set<String>()
 
     init(manager: PhotoBackupManager, cloud: CloudStore) {
         self.manager = manager
         self.cloud = cloud
 
-        manager.$backedUpResources
+        manager.$latestCompletedRecord
+            .compactMap { $0 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] record in self?.apply(record) }
+            .store(in: &cancellables)
+
+        manager.$isScanningLibrary
             .removeDuplicates()
-            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .filter { !$0 }
+            .debounce(for: .milliseconds(250), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.refresh() }
             .store(in: &cancellables)
 
@@ -30,7 +38,7 @@ private final class TGCloudGalleryModel: ObservableObject {
         guard let manager, let cloud else { return }
         generation += 1
         let token = generation
-        let source = manager.records
+        let source = manager.galleryRecordSnapshot()
         let files = cloud.index.files
         if records.isEmpty { isPreparing = true }
 
@@ -39,15 +47,30 @@ private final class TGCloudGalleryModel: ObservableObject {
             let result = grouped.values
                 .compactMap { group in group.first(where: { $0.mediaKind == "photo" }) ?? group.first }
                 .sorted { $0.uploadedAt > $1.uploadedAt }
+            let representedIDs = Set(result.map(\.assetLocalIdentifier))
             let sizes = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0.totalSize) })
 
             DispatchQueue.main.async { [weak self] in
                 guard let self, token == self.generation else { return }
                 self.records = result
+                self.representedAssetIDs = representedIDs
                 self.sizeByCloudFileID = sizes
                 self.isPreparing = false
             }
         }
+    }
+
+    private func apply(_ record: PhotoBackupRecord) {
+        if representedAssetIDs.insert(record.assetLocalIdentifier).inserted {
+            records.insert(record, at: 0)
+            return
+        }
+        guard record.mediaKind == "photo",
+              let index = records.firstIndex(where: {
+                  $0.assetLocalIdentifier == record.assetLocalIdentifier && $0.mediaKind != "photo"
+              }) else { return }
+        records.remove(at: index)
+        records.insert(record, at: 0)
     }
 }
 
@@ -257,7 +280,7 @@ private struct CloudGallerySection: View, Equatable {
 
     private var columns: [GridItem] {
         let count = horizontalSizeClass == .regular ? 5 : 3
-        return Array(repeating: GridItem(.flexible(), spacing: 6), count: count)
+        return Array(repeating: GridItem(.flexible(minimum: 0), spacing: 3), count: count)
     }
 
     private var visibleRecords: ArraySlice<PhotoBackupRecord> {
@@ -291,7 +314,7 @@ private struct CloudGallerySection: View, Equatable {
                 )
                 .frame(maxWidth: .infinity)
             } else {
-                LazyVGrid(columns: columns, spacing: 6) {
+                LazyVGrid(columns: columns, spacing: 3) {
                     ForEach(visibleRecords) { record in
                         Button {
                             selectedCloudFileID = record.cloudFileID
@@ -325,42 +348,45 @@ private struct CloudPhotoTile: View {
     let size: Int64?
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            PhotoLibraryThumbnail(assetIdentifier: record.assetLocalIdentifier, mediaKind: record.mediaKind)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        GeometryReader { geometry in
+            ZStack(alignment: .bottomLeading) {
+                PhotoLibraryThumbnail(assetIdentifier: record.assetLocalIdentifier, mediaKind: record.mediaKind)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
 
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.08), .black.opacity(0.78)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.04), .black.opacity(0.72)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(record.fileName)
-                    .font(.caption2.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                if let size {
-                    Text(size.byteCountString)
-                        .font(.caption2)
-                        .opacity(0.82)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(record.fileName)
+                        .font(.caption2.weight(.semibold))
                         .lineLimit(1)
+                    if let size {
+                        Text(size.byteCountString)
+                            .font(.system(size: 9, weight: .medium))
+                            .opacity(0.82)
+                            .lineLimit(1)
+                    }
                 }
+                .foregroundStyle(.white)
+                .padding(6)
             }
-            .foregroundStyle(.white)
-            .padding(7)
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
         }
         .aspectRatio(1, contentMode: .fit)
         .background(.secondary.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(alignment: .topTrailing) {
             Image(systemName: record.mediaKind == "video" ? "play.circle.fill" : "checkmark.icloud.fill")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.white)
                 .shadow(radius: 3)
-                .padding(6)
+                .padding(5)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
 
@@ -371,28 +397,36 @@ private final class TGPhotoThumbnailPipeline {
     private let cache = NSCache<NSString, UIImage>()
 
     private init() {
-        cache.countLimit = 240
-        cache.totalCostLimit = 48 * 1024 * 1024
+        imageManager.allowsCachingHighQualityImages = false
+        cache.countLimit = 180
+        cache.totalCostLimit = 36 * 1024 * 1024
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.cache.removeAllObjects()
+        }
     }
 
     func request(
         assetIdentifier: String,
         targetSize: CGSize,
-        completion: @escaping (UIImage?) -> Void
+        completion: @escaping (UIImage?, Bool) -> Void
     ) -> PHImageRequestID? {
-        let key = assetIdentifier as NSString
+        let key = "\(assetIdentifier)|\(Int(targetSize.width))x\(Int(targetSize.height))" as NSString
         if let cached = cache.object(forKey: key) {
-            DispatchQueue.main.async { completion(cached) }
+            DispatchQueue.main.async { completion(cached, true) }
             return nil
         }
 
         guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil).firstObject else {
-            DispatchQueue.main.async { completion(nil) }
+            DispatchQueue.main.async { completion(nil, true) }
             return nil
         }
 
         let options = PHImageRequestOptions()
-        options.deliveryMode = .opportunistic
+        options.deliveryMode = .fastFormat
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = false
 
@@ -402,15 +436,14 @@ private final class TGPhotoThumbnailPipeline {
             contentMode: .aspectFill,
             options: options
         ) { [weak self] result, info in
-            guard let self, let result else { return }
+            guard let self else { return }
             let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
             guard !cancelled else { return }
-            let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-            if !degraded {
+            if let result {
                 let cost = Int(result.size.width * result.size.height * 4)
                 self.cache.setObject(result, forKey: key, cost: cost)
             }
-            DispatchQueue.main.async { completion(result) }
+            DispatchQueue.main.async { completion(result, true) }
         }
     }
 
@@ -452,10 +485,13 @@ private struct PhotoLibraryThumbnail: View {
         guard image == nil, requestID == nil else { return }
         requestID = TGPhotoThumbnailPipeline.shared.request(
             assetIdentifier: assetIdentifier,
-            targetSize: CGSize(width: 240, height: 240)
-        ) { result in
-            image = result
-            requestID = nil
+            targetSize: CGSize(
+                width: 160 * min(UIScreen.main.scale, 2),
+                height: 160 * min(UIScreen.main.scale, 2)
+            )
+        ) { result, isFinal in
+            if let result { image = result }
+            if isFinal { requestID = nil }
         }
     }
 }

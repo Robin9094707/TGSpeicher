@@ -326,8 +326,8 @@ struct FileRowV2: View {
     var body: some View {
         HStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.blue.opacity(0.12))
-                Image(systemName: file.symbol).font(.title3).foregroundStyle(.blue)
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(file.tint.opacity(0.12))
+                Image(systemName: file.symbol).font(.title3).foregroundStyle(file.tint)
             }
             .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
@@ -375,7 +375,7 @@ struct FileTileV2: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Image(systemName: file.symbol).font(.largeTitle).foregroundStyle(.blue)
+                Image(systemName: file.symbol).font(.largeTitle).foregroundStyle(file.tint)
                 Spacer()
                 if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(.blue) }
             }

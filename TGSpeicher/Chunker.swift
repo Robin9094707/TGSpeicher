@@ -25,6 +25,7 @@ struct PreparedFile {
     let chunks: [PreparedChunk]
     let totalSize: Int64
     let sha256: String
+    let temporaryDirectory: URL?
 }
 
 enum FileChunker {
@@ -37,12 +38,38 @@ enum FileChunker {
         let totalSize = source.fileByteSize
         guard totalSize >= 0 else { throw ChunkerError.invalidFile }
 
+        let count = max(1, Int(ceil(Double(max(totalSize, 1)) / Double(maxChunkBytes))))
+
+        // Most camera files fit into a single Telegram document. Hashing the durable
+        // queue copy in place avoids creating and writing a second full-size copy.
+        if count == 1 {
+            let reader = try FileHandle(forReadingFrom: source)
+            defer { try? reader.close() }
+            var hasher = SHA256()
+            var completed: Int64 = 0
+            while let data = try reader.read(upToCount: 4 * 1024 * 1024), !data.isEmpty {
+                hasher.update(data: data)
+                completed += Int64(data.count)
+                progress(completed, totalSize)
+            }
+            let digest = hex(hasher.finalize())
+            return PreparedFile(
+                chunks: [PreparedChunk(url: source, index: 1, count: 1, size: totalSize, sha256: digest)],
+                totalSize: totalSize,
+                sha256: digest,
+                temporaryDirectory: nil
+            )
+        }
+
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("TGSpeicherChunks", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var shouldRemoveRootOnExit = true
+        defer {
+            if shouldRemoveRootOnExit { try? FileManager.default.removeItem(at: root) }
+        }
 
-        let count = max(1, Int(ceil(Double(max(totalSize, 1)) / Double(maxChunkBytes))))
         let reader = try FileHandle(forReadingFrom: source)
         defer { try? reader.close() }
 
@@ -87,12 +114,18 @@ enum FileChunker {
             )
         }
 
-        return PreparedFile(chunks: output, totalSize: totalSize, sha256: hex(fileHasher.finalize()))
+        shouldRemoveRootOnExit = false
+        return PreparedFile(
+            chunks: output,
+            totalSize: totalSize,
+            sha256: hex(fileHasher.finalize()),
+            temporaryDirectory: root
+        )
     }
 
-    static func cleanup(_ chunks: [PreparedChunk]) {
-        guard let parent = chunks.first?.url.deletingLastPathComponent() else { return }
-        try? FileManager.default.removeItem(at: parent)
+    static func cleanup(_ prepared: PreparedFile) {
+        guard let temporaryDirectory = prepared.temporaryDirectory else { return }
+        try? FileManager.default.removeItem(at: temporaryDirectory)
     }
 
     static func join(chunks: [URL], destination: URL, progress: @escaping (Int64) -> Void) throws {

@@ -27,7 +27,7 @@ final class RemoteURLImporter: ObservableObject {
             do {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 120
-                request.setValue("TGSpeicher-iOS/2.0", forHTTPHeaderField: "User-Agent")
+                request.setValue("TGSpeicher-iOS/2.3", forHTTPHeaderField: "User-Agent")
                 let (temporaryURL, response) = try await URLSession.shared.download(for: request)
                 guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                     throw URLError(.badServerResponse)

@@ -106,7 +106,8 @@ struct FolderSelectionSheet: View {
 }
 
 struct TagSelectionSheet: View {
-    @ObservedObject var cloud: CloudStore; let onApply: (Set<UUID>) -> Void; @State private var selected = Set<UUID>()
+    @ObservedObject var cloud: CloudStore; let onApply: (Set<UUID>) -> Void; @State private var selected: Set<UUID>
+    init(cloud: CloudStore, initialSelection: Set<UUID> = [], onApply: @escaping (Set<UUID>) -> Void) { self.cloud = cloud; self.onApply = onApply; _selected = State(initialValue: initialSelection) }
     var body: some View { NavigationStack { List { ForEach(cloud.tags) { tag in Button { if selected.contains(tag.id) { selected.remove(tag.id) } else { selected.insert(tag.id) } } label: { HStack { Label(tag.name, systemImage: "tag.fill").foregroundStyle(.primary); Spacer(); if selected.contains(tag.id) { Image(systemName: "checkmark.circle.fill").foregroundStyle(.blue) } } } } }.navigationTitle("Set Tags").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Apply") { onApply(selected) } } } }.presentationDetents([.medium, .large]) }
 }
 
@@ -116,6 +117,52 @@ struct CompactTransferGlass: View {
 }
 
 extension CloudFileEntry {
-    var symbol: String { let ext = (name as NSString).pathExtension.lowercased(); if ["jpg","jpeg","png","gif","heic","webp"].contains(ext) { return "photo.fill" }; if ["mp4","mov","m4v","mkv"].contains(ext) { return "film.fill" }; if ["mp3","m4a","aac","flac","wav","ogg"].contains(ext) { return "waveform" }; if ext == "pdf" { return "doc.richtext.fill" }; if ["zip","rar","7z","tar","gz"].contains(ext) { return "archivebox.fill" }; return chunks.count > 1 ? "square.stack.3d.up.fill" : "doc.fill" }
-    var tint: Color { let ext = (name as NSString).pathExtension.lowercased(); if ["jpg","jpeg","png","gif","heic","webp"].contains(ext) { return .pink }; if ["mp4","mov","m4v","mkv"].contains(ext) { return .purple }; if ["mp3","m4a","aac","flac","wav","ogg"].contains(ext) { return .orange }; if ext == "pdf" { return .red }; return .blue }
+    private var normalizedExtension: String { (name as NSString).pathExtension.lowercased() }
+
+    var symbol: String {
+        let ext = normalizedExtension
+        if mimeType?.hasPrefix("image/") == true || ["jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tif", "tiff", "bmp", "dng", "raw", "svg"].contains(ext) { return "photo.fill" }
+        if mimeType?.hasPrefix("video/") == true || ["mp4", "mov", "m4v", "mkv", "avi", "webm", "hevc", "mpeg", "mpg"].contains(ext) { return "film.fill" }
+        if mimeType?.hasPrefix("audio/") == true || ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "aiff", "alac", "wma"].contains(ext) { return "music.note.list" }
+        if ext == "pdf" { return "doc.richtext.fill" }
+        if ["doc", "docx", "odt", "rtf", "pages", "txt", "text", "md", "markdown"].contains(ext) { return "doc.text.fill" }
+        if ["xls", "xlsx", "csv", "tsv", "ods", "numbers"].contains(ext) { return "tablecells.fill" }
+        if ["ppt", "pptx", "odp", "key"].contains(ext) { return "rectangle.on.rectangle.angled" }
+        if ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"].contains(ext) { return "archivebox.fill" }
+        if ["swift", "js", "ts", "jsx", "tsx", "py", "java", "kt", "kts", "c", "h", "cpp", "hpp", "cs", "go", "rs", "php", "rb", "sh", "html", "css", "scss", "json", "xml", "yaml", "yml", "toml"].contains(ext) { return "chevron.left.forwardslash.chevron.right" }
+        if ["sqlite", "sqlite3", "db", "sql", "mdb"].contains(ext) { return "cylinder.fill" }
+        if ["epub", "mobi", "azw", "azw3"].contains(ext) { return "books.vertical.fill" }
+        if ["ttf", "otf", "woff", "woff2"].contains(ext) { return "textformat" }
+        if ["usdz", "obj", "stl", "gltf", "glb", "fbx"].contains(ext) { return "cube.fill" }
+        if ["ipa", "apk", "app", "dmg", "pkg", "exe", "msi", "jar"].contains(ext) { return "shippingbox.fill" }
+        if ["vcf"].contains(ext) { return "person.crop.circle.fill" }
+        if ["ics"].contains(ext) { return "calendar" }
+        return chunks.count > 1 ? "square.stack.3d.up.fill" : "doc.fill"
+    }
+
+    var tint: Color {
+        let ext = normalizedExtension
+        if isTGImage { return .pink }
+        if isTGVideo { return .purple }
+        if mimeType?.hasPrefix("audio/") == true || ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "aiff", "alac", "wma"].contains(ext) { return .orange }
+        if ext == "pdf" { return .red }
+        if ["xls", "xlsx", "csv", "tsv", "ods", "numbers"].contains(ext) { return .green }
+        if ["ppt", "pptx", "odp", "key"].contains(ext) { return .orange }
+        if ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"].contains(ext) { return .brown }
+        if ["swift", "js", "ts", "py", "java", "kt", "c", "cpp", "cs", "go", "rs", "html", "css", "json", "xml", "yaml", "yml"].contains(ext) { return .indigo }
+        return .blue
+    }
+
+    var typeLabel: String {
+        let ext = normalizedExtension
+        if isTGImage { return "Image" }
+        if isTGVideo { return "Video" }
+        if mimeType?.hasPrefix("audio/") == true || ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus"].contains(ext) { return "Audio" }
+        if ext == "pdf" { return "PDF document" }
+        if ["xls", "xlsx", "csv", "tsv", "ods", "numbers"].contains(ext) { return "Spreadsheet" }
+        if ["ppt", "pptx", "odp", "key"].contains(ext) { return "Presentation" }
+        if ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"].contains(ext) { return "Archive" }
+        if let mimeType, !mimeType.isEmpty { return mimeType }
+        return ext.isEmpty ? "File" : ext.uppercased() + " file"
+    }
 }

@@ -22,14 +22,30 @@ private struct PhotoBackupSnapshot: Codable {
     var records: [PhotoBackupRecord]
 }
 
+private struct PhotoBackupJournalEvent: Codable {
+    let record: PhotoBackupRecord
+}
+
 private struct PhotoBackupCandidate {
-    let asset: PHAsset
-    let resource: PHAssetResource
+    let assetLocalIdentifier: String
+    let resourceTypeRawValue: Int
     let fileName: String
     let mediaKind: String
+    let creationDate: Date?
 
     var resourceKey: String {
-        "\(asset.localIdentifier)|\(resource.type.rawValue)|\(fileName)"
+        "\(assetLocalIdentifier)|\(resourceTypeRawValue)|\(fileName)"
+    }
+
+    var queueMetadata: PhotoBackupQueueMetadata {
+        PhotoBackupQueueMetadata(
+            resourceKey: resourceKey,
+            assetLocalIdentifier: assetLocalIdentifier,
+            resourceTypeRawValue: resourceTypeRawValue,
+            fileName: fileName,
+            mediaKind: mediaKind,
+            creationDate: creationDate
+        )
     }
 }
 
@@ -41,6 +57,7 @@ final class PhotoBackupManager: ObservableObject {
     @Published private(set) var backedUpAssets = 0
     @Published private(set) var backedUpResources = 0
     @Published private(set) var pendingResources = 0
+    @Published private(set) var deletableAssetCount = 0
     @Published private(set) var isRunning = false
     @Published private(set) var isPaused = false
     @Published private(set) var isNightMode = false
@@ -50,6 +67,7 @@ final class PhotoBackupManager: ObservableObject {
     @Published private(set) var currentFileName: String?
     @Published private(set) var iCloudProgress: Double = 0
     @Published private(set) var statusText = "Photo backup is ready"
+    @Published private(set) var latestCompletedRecord: PhotoBackupRecord?
     @Published var lastError: String?
     @Published var autoResumeOnLaunch: Bool {
         didSet { defaults.set(autoResumeOnLaunch, forKey: Self.autoResumeKey) }
@@ -60,14 +78,24 @@ final class PhotoBackupManager: ObservableObject {
     private let telegram: TelegramClient
     private let defaults = UserDefaults.standard
     private let libraryScanQueue = DispatchQueue(label: "eu.simplexsmp.tgspeicher.photos.scan", qos: .utility)
+    private let indexIOQueue = DispatchQueue(label: "eu.simplexsmp.tgspeicher.photos.index", qos: .utility)
     private var cancellables = Set<AnyCancellable>()
     private var candidates: [PhotoBackupCandidate] = []
+    private var pendingCandidates: [PhotoBackupCandidate] = []
+    private var pendingCandidateCursor = 0
     private var recordsByKey: [String: PhotoBackupRecord] = [:]
+    private var requiredResourceCountByAssetID: [String: Int] = [:]
+    private var backedResourceCountByAssetID: [String: Int] = [:]
+    private var fullyBackedUpAssetIDsCache = Set<String>()
     private var currentCandidate: PhotoBackupCandidate?
     private var currentQueueItemID: UUID?
-    private var enqueueStartedAt: Date?
     private var currentExportURL: URL?
     private var syncWorkItem: DispatchWorkItem?
+    private var recordsSinceLocalSnapshot = 0
+    private var recordsSinceRemoteSnapshot = 0
+    private var lastRemoteSnapshotAt = Date.distantPast
+    private var scheduledRetryIDs = Set<UUID>()
+    private var photoExportRetryCount: [String: Int] = [:]
     private var remoteIndexReady = false
     private var previousBrightness: CGFloat?
     private var previousIdleTimerDisabled: Bool?
@@ -76,6 +104,9 @@ final class PhotoBackupManager: ObservableObject {
     private var lastLibraryScanAt: Date?
 
     private static let autoResumeKey = "photos.autoResumeOnLaunch.v1"
+    private static let backupEnabledKey = "photos.backupEnabled"
+    private static let pausedKey = "photos.backupPaused.v2"
+    private static let nightModeKey = "photos.nightModeRequested.v2"
     private static let marker = "#TGSpeicherPhotoBackupIndexV1"
 
     init(cloud: CloudStore, queue: UploadQueueManager, telegram: TelegramClient) {
@@ -86,6 +117,12 @@ final class PhotoBackupManager: ObservableObject {
         self.autoResumeOnLaunch = defaults.object(forKey: Self.autoResumeKey) as? Bool ?? true
         self.snapshotMessageID = defaults.object(forKey: "photos.snapshotMessageID") as? Int64
         loadLocalIndex()
+        self.isPaused = defaults.bool(forKey: Self.backupEnabledKey)
+            && defaults.bool(forKey: Self.pausedKey)
+        self.isNightMode = defaults.bool(forKey: Self.backupEnabledKey)
+            && !defaults.bool(forKey: Self.pausedKey)
+            && defaults.bool(forKey: Self.nightModeKey)
+        cleanupStalePhotoExports()
 
         queue.$items
             .receive(on: RunLoop.main)
@@ -105,9 +142,13 @@ final class PhotoBackupManager: ObservableObject {
                 guard let self else { return }
                 self.authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
                 guard self.hasLibraryAccess else { return }
+                guard self.remoteIndexReady else {
+                    self.statusText = "Restoring the Telegram photo index…"
+                    return
+                }
                 // Do not repeatedly rescan a large iCloud library every time a sheet closes
                 // or the app becomes active. A fresh scan can still be requested manually.
-                if self.lastLibraryScanAt == nil || Date().timeIntervalSince(self.lastLibraryScanAt!) > 60 {
+                if self.lastLibraryScanAt == nil || Date().timeIntervalSince(self.lastLibraryScanAt!) > 600 {
                     self.refreshLibrary()
                 } else {
                     self.maybeAutoStart()
@@ -115,11 +156,16 @@ final class PhotoBackupManager: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Crucial: never enumerate the entire Photos library synchronously from init.
-        // Give SwiftUI a chance to render first; refreshLibrary itself runs off-main.
-        if hasLibraryAccess {
-            DispatchQueue.main.async { [weak self] in self?.refreshLibrary() }
-        }
+        NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.persistLocalIndex()
+                self?.syncIndexSoon(delay: 0.2)
+            }
+            .store(in: &cancellables)
+
+        // The remote photo index callback starts the first background scan. Waiting
+        // for it prevents a huge iCloud library from being enumerated twice at launch.
     }
 
     var hasLibraryAccess: Bool {
@@ -130,13 +176,13 @@ final class PhotoBackupManager: ObservableObject {
         recordsByKey.values.sorted { $0.uploadedAt > $1.uploadedAt }
     }
 
+    func galleryRecordSnapshot() -> [PhotoBackupRecord] {
+        Array(recordsByKey.values)
+    }
+
     var cloudGalleryFiles: [CloudFileEntry] {
         let ids = Set(recordsByKey.values.map(\.cloudFileID))
         return cloud.index.files.filter { ids.contains($0.id) }.sorted { $0.createdAt > $1.createdAt }
-    }
-
-    var deletableAssetCount: Int {
-        fullyBackedUpAssetIDs().count
     }
 
     func requestFullAccess() {
@@ -162,6 +208,8 @@ final class PhotoBackupManager: ObservableObject {
         libraryScanGeneration = generation
         isScanningLibrary = true
         statusText = "Scanning Photos library in background…"
+        let knownRecords = recordsByKey
+        let cloudFiles = cloud.index.files
 
         libraryScanQueue.async { [weak self] in
             guard let self else { return }
@@ -170,33 +218,63 @@ final class PhotoBackupManager: ObservableObject {
             let fetch = PHAsset.fetchAssets(with: options)
             let assetCount = fetch.count
             var newCandidates: [PhotoBackupCandidate] = []
+            var newPendingCandidates: [PhotoBackupCandidate] = []
+            var requiredCounts: [String: Int] = [:]
+            var backedCounts: [String: Int] = [:]
+            var fullyBackedAssetIDs = Set<String>()
+            let cloudIDs = Set(cloudFiles.map(\.id))
             newCandidates.reserveCapacity(max(assetCount, 1))
+            newPendingCandidates.reserveCapacity(max(assetCount / 8, 1))
 
             fetch.enumerateObjects { asset, _, _ in
+                var requiredForAsset = 0
+                var backedForAsset = 0
                 for resource in Self.preferredResourcesBackground(for: asset) {
                     let name = resource.originalFilename.isEmpty
                         ? Self.fallbackNameBackground(asset: asset, resource: resource)
                         : resource.originalFilename
                     let mediaKind = Self.mediaKindBackground(asset: asset, resource: resource)
-                    newCandidates.append(
-                        PhotoBackupCandidate(
-                            asset: asset,
-                            resource: resource,
-                            fileName: name,
-                            mediaKind: mediaKind
-                        )
+                    let candidate = PhotoBackupCandidate(
+                        assetLocalIdentifier: asset.localIdentifier,
+                        resourceTypeRawValue: resource.type.rawValue,
+                        fileName: name,
+                        mediaKind: mediaKind,
+                        creationDate: asset.creationDate
                     )
+                    newCandidates.append(candidate)
+                    requiredForAsset += 1
+                    if let record = knownRecords[candidate.resourceKey], cloudIDs.contains(record.cloudFileID) {
+                        backedForAsset += 1
+                    } else {
+                        newPendingCandidates.append(candidate)
+                    }
+                }
+                if requiredForAsset > 0 {
+                    requiredCounts[asset.localIdentifier] = requiredForAsset
+                    backedCounts[asset.localIdentifier] = backedForAsset
+                    if requiredForAsset == backedForAsset {
+                        fullyBackedAssetIDs.insert(asset.localIdentifier)
+                    }
                 }
             }
 
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.libraryScanGeneration == generation else { return }
                 self.candidates = newCandidates
+                self.pendingCandidates = newPendingCandidates
+                self.pendingCandidateCursor = 0
+                self.requiredResourceCountByAssetID = requiredCounts
+                self.backedResourceCountByAssetID = backedCounts
+                self.fullyBackedUpAssetIDsCache = fullyBackedAssetIDs
                 self.totalAssets = assetCount
+                self.totalResources = newCandidates.count
+                self.backedUpResources = newCandidates.count - newPendingCandidates.count
+                self.pendingResources = newPendingCandidates.count
+                self.backedUpAssets = fullyBackedAssetIDs.count
+                self.deletableAssetCount = fullyBackedAssetIDs.count
                 self.isScanningLibrary = false
                 self.lastLibraryScanAt = Date()
                 self.reconcileRecordsWithCloudIndex()
-                self.recalculateCounters()
                 self.statusText = self.pendingResources == 0
                     ? "Photos library is fully backed up"
                     : "Photos scan complete • \(self.pendingResources) resource(s) pending"
@@ -215,7 +293,7 @@ final class PhotoBackupManager: ObservableObject {
             requestFullAccess()
             return
         }
-        defaults.set(true, forKey: "photos.backupEnabled")
+        persistSession(enabled: true, paused: false, nightMode: nightMode)
         isRunning = true
         isPaused = false
         isNightMode = nightMode
@@ -225,12 +303,13 @@ final class PhotoBackupManager: ObservableObject {
         if candidates.isEmpty || lastLibraryScanAt == nil {
             refreshLibrary()
         } else {
-            processNextIfPossible()
+            continueCurrentWorkOrStartNext()
         }
     }
 
     func pauseBackup() {
         isPaused = true
+        persistSession(enabled: true, paused: true, nightMode: false)
         statusText = currentQueueItemID == nil ? "Backup paused" : "Pausing after the current upload"
         leaveNightMode()
         syncIndexSoon(delay: 0.1)
@@ -241,12 +320,14 @@ final class PhotoBackupManager: ObservableObject {
         isRunning = true
         isPaused = false
         isNightMode = nightMode
+        persistSession(enabled: true, paused: false, nightMode: nightMode)
+        if let currentCandidate { photoExportRetryCount[currentCandidate.resourceKey] = 0 }
         if nightMode { applyNightMode() }
         statusText = nightMode ? "Night backup resumed" : "Photo backup resumed"
         if candidates.isEmpty || lastLibraryScanAt == nil {
             refreshLibrary()
         } else {
-            processNextIfPossible()
+            continueCurrentWorkOrStartNext()
         }
     }
 
@@ -254,6 +335,7 @@ final class PhotoBackupManager: ObservableObject {
         isRunning = false
         isPaused = false
         currentFileName = nil
+        persistSession(enabled: false, paused: false, nightMode: false)
         leaveNightMode()
         statusText = "Backup stopped"
         syncIndexSoon(delay: 0.1)
@@ -268,7 +350,7 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     func deleteFullyBackedUpAssetsFromPhotos() {
-        let ids = Array(fullyBackedUpAssetIDs())
+        let ids = Array(fullyBackedUpAssetIDsCache)
         guard !ids.isEmpty else { return }
         let fetch = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
         PHPhotoLibrary.shared().performChanges({
@@ -343,6 +425,10 @@ final class PhotoBackupManager: ObservableObject {
     private func processNextIfPossible() {
         guard isRunning, !isPaused, currentCandidate == nil, currentQueueItemID == nil else { return }
         guard !isExportingFromPhotos else { return }
+        guard remoteIndexReady else {
+            statusText = "Restoring the Telegram photo index…"
+            return
+        }
         guard !isScanningLibrary else {
             statusText = "Scanning Photos library in background…"
             return
@@ -350,16 +436,23 @@ final class PhotoBackupManager: ObservableObject {
         if isNightMode { applyNightMode() }
 
         let folderID = ensureBackupFolder()
+        if let failedPhoto = queue.items.first(where: {
+            $0.state == .failed && $0.photoBackup != nil && recordsByKey[$0.photoBackup!.resourceKey] == nil
+        }) {
+            scheduleAutomaticRetry(failedPhoto)
+            return
+        }
         if queue.items.contains(where: { $0.folderID == folderID && ($0.state == .queued || $0.state == .uploading) }) {
             statusText = "Waiting for the Telegram upload queue…"
             return
         }
 
         reconcileRecordsWithCloudIndex()
-        guard let next = candidates.first(where: { recordsByKey[$0.resourceKey] == nil }) else {
+        guard let next = nextPendingCandidate() else {
             isRunning = false
             isPaused = false
             currentFileName = nil
+            persistSession(enabled: true, paused: false, nightMode: false)
             leaveNightMode()
             statusText = "Photo backup is complete"
             syncIndexSoon(delay: 0.1)
@@ -372,7 +465,36 @@ final class PhotoBackupManager: ObservableObject {
         exportToQueue(next, folderID: folderID)
     }
 
+    private func continueCurrentWorkOrStartNext() {
+        if let currentQueueItemID,
+           let item = queue.items.first(where: { $0.id == currentQueueItemID && $0.state == .failed }) {
+            if (item.automaticRetryCount ?? 0) >= 5 {
+                queue.retry(item)
+            } else {
+                scheduleAutomaticRetry(item)
+            }
+            return
+        }
+        if let currentCandidate, currentQueueItemID == nil, !isExportingFromPhotos {
+            exportToQueue(currentCandidate, folderID: ensureBackupFolder())
+            return
+        }
+        processNextIfPossible()
+    }
+
     private func exportToQueue(_ candidate: PhotoBackupCandidate, folderID: UUID) {
+        guard let asset = PHAsset.fetchAssets(
+            withLocalIdentifiers: [candidate.assetLocalIdentifier],
+            options: nil
+        ).firstObject,
+        let resource = resolveResource(for: candidate, asset: asset) else {
+            currentCandidate = nil
+            currentFileName = nil
+            lastError = "The Photos item for \(candidate.fileName) is no longer available. Refresh the library and try again."
+            pauseBackup()
+            return
+        }
+
         isExportingFromPhotos = true
         iCloudProgress = 0
         statusText = "Preparing \(candidate.fileName) from Photos…"
@@ -400,52 +522,73 @@ final class PhotoBackupManager: ObservableObject {
             }
         }
 
-        PHAssetResourceManager.default().writeData(for: candidate.resource, toFile: destination, options: options) { [weak self] error in
+        PHAssetResourceManager.default().writeData(for: resource, toFile: destination, options: options) { [weak self] error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isExportingFromPhotos = false
                 if let error {
-                    self.lastError = error.localizedDescription
-                    self.statusText = "Photos export failed"
-                    self.pauseBackup()
+                    if let currentExportURL = self.currentExportURL {
+                        try? FileManager.default.removeItem(at: currentExportURL.deletingLastPathComponent())
+                        self.currentExportURL = nil
+                    }
+                    let attempt = (self.photoExportRetryCount[candidate.resourceKey] ?? 0) + 1
+                    self.photoExportRetryCount[candidate.resourceKey] = attempt
+                    if self.isRunning, !self.isPaused, attempt <= 5 {
+                        let delay = min(60.0, pow(2.0, Double(attempt)))
+                        self.statusText = "iCloud download interrupted • retrying in \(Int(delay))s"
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self, self.isRunning, !self.isPaused,
+                                  self.currentCandidate?.resourceKey == candidate.resourceKey else { return }
+                            self.exportToQueue(candidate, folderID: folderID)
+                        }
+                    } else {
+                        self.lastError = error.localizedDescription
+                        self.statusText = "Photos export paused after repeated errors"
+                        self.pauseBackup()
+                    }
                     return
                 }
-                self.enqueueStartedAt = Date()
+                self.photoExportRetryCount[candidate.resourceKey] = nil
                 self.statusText = "Queued for Telegram upload"
-                self.queue.enqueuePreparedFile(destination, folderID: folderID)
+                self.queue.enqueuePreparedFile(
+                    destination,
+                    folderID: folderID,
+                    photoBackup: candidate.queueMetadata
+                )
             }
         }
     }
 
     private func handleQueue(_ items: [QueuedUpload]) {
+        if let completed = items.first(where: { $0.state == .completed && $0.photoBackup != nil }) {
+            if let key = completed.photoBackup?.resourceKey, recordsByKey[key] != nil {
+                queue.remove(completed)
+            } else {
+                completeQueuedPhoto(completed)
+            }
+            return
+        }
+
         guard let candidate = currentCandidate else {
             if isRunning && !isPaused { processNextIfPossible() }
             return
         }
-        let folderID = ensureBackupFolder()
 
-        if currentQueueItemID == nil, let started = enqueueStartedAt {
-            if let item = items
-                .filter({ $0.folderID == folderID && $0.displayName == safeFileName(candidate.fileName) && $0.createdAt >= started.addingTimeInterval(-2) })
-                .sorted(by: { $0.createdAt < $1.createdAt })
-                .first {
-                currentQueueItemID = item.id
-                if let currentExportURL {
-                    try? FileManager.default.removeItem(at: currentExportURL.deletingLastPathComponent())
-                    self.currentExportURL = nil
-                }
+        if currentQueueItemID == nil,
+           let item = items.first(where: { $0.photoBackup?.resourceKey == candidate.resourceKey }) {
+            currentQueueItemID = item.id
+            if let currentExportURL {
+                try? FileManager.default.removeItem(at: currentExportURL.deletingLastPathComponent())
+                self.currentExportURL = nil
             }
         }
 
         guard let currentQueueItemID, let item = items.first(where: { $0.id == currentQueueItemID }) else { return }
         switch item.state {
         case .completed:
-            completeCandidate(candidate, queueItem: item, folderID: folderID)
+            completeQueuedPhoto(item)
         case .failed:
-            lastError = item.lastError ?? "Telegram upload failed."
-            statusText = "Backup paused after an upload error"
-            isPaused = true
-            leaveNightMode()
+            scheduleAutomaticRetry(item)
         case .queued:
             statusText = "Waiting in Telegram upload queue"
         case .uploading:
@@ -453,38 +596,83 @@ final class PhotoBackupManager: ObservableObject {
         }
     }
 
-    private func completeCandidate(_ candidate: PhotoBackupCandidate, queueItem: QueuedUpload, folderID: UUID) {
-        let started = queueItem.startedAt ?? queueItem.createdAt
-        guard let file = cloud.index.files
-            .filter({ $0.folderID == folderID && $0.name == queueItem.displayName && $0.modifiedAt >= started.addingTimeInterval(-3) })
-            .max(by: { $0.modifiedAt < $1.modifiedAt }) else {
+    private func completeQueuedPhoto(_ queueItem: QueuedUpload) {
+        guard let metadata = queueItem.photoBackup else { return }
+        let file = queueItem.cloudFileID.flatMap { id in cloud.index.files.first(where: { $0.id == id }) }
+        guard let file else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                guard let self, let candidate = self.currentCandidate else { return }
-                self.completeCandidate(candidate, queueItem: queueItem, folderID: folderID)
+                guard let self,
+                      let current = self.queue.items.first(where: { $0.id == queueItem.id }),
+                      current.state == .completed else { return }
+                self.completeQueuedPhoto(current)
             }
             return
         }
 
-        recordsByKey[candidate.resourceKey] = PhotoBackupRecord(
-            resourceKey: candidate.resourceKey,
-            assetLocalIdentifier: candidate.asset.localIdentifier,
-            resourceTypeRawValue: candidate.resource.type.rawValue,
-            fileName: candidate.fileName,
-            mediaKind: candidate.mediaKind,
+        let wasNew = recordsByKey[metadata.resourceKey] == nil
+        let record = PhotoBackupRecord(
+            resourceKey: metadata.resourceKey,
+            assetLocalIdentifier: metadata.assetLocalIdentifier,
+            resourceTypeRawValue: metadata.resourceTypeRawValue,
+            fileName: metadata.fileName,
+            mediaKind: metadata.mediaKind,
             cloudFileID: file.id,
-            creationDate: candidate.asset.creationDate,
+            creationDate: metadata.creationDate,
             uploadedAt: Date()
         )
-        persistLocalIndex()
-        syncIndexSoon()
-        currentCandidate = nil
-        currentQueueItemID = nil
-        enqueueStartedAt = nil
-        currentFileName = nil
+        recordsByKey[metadata.resourceKey] = record
+        latestCompletedRecord = record
+        appendLocalJournal(record)
+        checkpointRemoteIndexIfNeeded()
+        if wasNew { updateCountersAfterCompleted(record) }
+        if currentCandidate?.resourceKey == metadata.resourceKey {
+            currentCandidate = nil
+            currentQueueItemID = nil
+            currentFileName = nil
+        }
         iCloudProgress = 0
-        recalculateCounters()
+        queue.remove(queueItem)
         statusText = "Backed up \(backedUpAssets) / \(totalAssets) library items"
         DispatchQueue.main.async { [weak self] in self?.processNextIfPossible() }
+    }
+
+    private func nextPendingCandidate() -> PhotoBackupCandidate? {
+        while pendingCandidateCursor < pendingCandidates.count {
+            let candidate = pendingCandidates[pendingCandidateCursor]
+            pendingCandidateCursor += 1
+            if recordsByKey[candidate.resourceKey] == nil { return candidate }
+        }
+        return nil
+    }
+
+    private func scheduleAutomaticRetry(_ item: QueuedUpload) {
+        guard isRunning, !isPaused else { return }
+        let attempts = item.automaticRetryCount ?? 0
+        guard attempts < 5 else {
+            lastError = item.lastError ?? "Telegram upload failed repeatedly."
+            statusText = "Backup paused after repeated upload errors"
+            pauseBackup()
+            return
+        }
+        guard scheduledRetryIDs.insert(item.id).inserted else { return }
+        let delay = min(60.0, pow(2.0, Double(attempts + 1)))
+        statusText = "Telegram upload interrupted • retrying in \(Int(delay))s"
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.scheduledRetryIDs.remove(item.id)
+            guard self.isRunning, !self.isPaused,
+                  let current = self.queue.items.first(where: { $0.id == item.id }),
+                  current.state == .failed else { return }
+            self.queue.retry(current, automatic: true)
+        }
+    }
+
+    private func resolveResource(for candidate: PhotoBackupCandidate, asset: PHAsset) -> PHAssetResource? {
+        let preferred = Self.preferredResourcesBackground(for: asset)
+        return preferred.first {
+            $0.type.rawValue == candidate.resourceTypeRawValue &&
+            ($0.originalFilename == candidate.fileName || $0.originalFilename.isEmpty)
+        } ?? preferred.first { $0.type.rawValue == candidate.resourceTypeRawValue }
     }
 
     private nonisolated static func preferredResourcesBackground(for asset: PHAsset) -> [PHAssetResource] {
@@ -539,28 +727,53 @@ final class PhotoBackupManager: ObservableObject {
         guard !stale.isEmpty, remoteIndexReady else { return }
         stale.forEach { recordsByKey.removeValue(forKey: $0) }
         persistLocalIndex()
+        recalculateCounters()
     }
 
     private func recalculateCounters() {
-        totalResources = candidates.count
-        let candidateKeys = Set(candidates.map(\.resourceKey))
-        backedUpResources = candidateKeys.filter { recordsByKey[$0] != nil }.count
-        pendingResources = max(0, totalResources - backedUpResources)
+        let cloudIDs = Set(cloud.index.files.map(\.id))
+        var requiredCounts: [String: Int] = [:]
+        var backedCounts: [String: Int] = [:]
+        var newPending: [PhotoBackupCandidate] = []
 
-        let grouped = Dictionary(grouping: candidates, by: { $0.asset.localIdentifier })
-        backedUpAssets = grouped.values.filter { group in group.allSatisfy { recordsByKey[$0.resourceKey] != nil } }.count
+        newPending.reserveCapacity(max(pendingResources, 1))
+        for candidate in candidates {
+            requiredCounts[candidate.assetLocalIdentifier, default: 0] += 1
+            if let record = recordsByKey[candidate.resourceKey], cloudIDs.contains(record.cloudFileID) {
+                backedCounts[candidate.assetLocalIdentifier, default: 0] += 1
+            } else {
+                newPending.append(candidate)
+            }
+        }
+
+        let completeAssets = Set(requiredCounts.compactMap { assetID, required in
+            backedCounts[assetID, default: 0] == required ? assetID : nil
+        })
+        requiredResourceCountByAssetID = requiredCounts
+        backedResourceCountByAssetID = backedCounts
+        fullyBackedUpAssetIDsCache = completeAssets
+        pendingCandidates = newPending
+        pendingCandidateCursor = 0
+        totalResources = candidates.count
+        pendingResources = newPending.count
+        backedUpResources = max(0, totalResources - pendingResources)
+        backedUpAssets = completeAssets.count
+        deletableAssetCount = completeAssets.count
     }
 
-    private func fullyBackedUpAssetIDs() -> Set<String> {
-        let grouped = Dictionary(grouping: candidates, by: { $0.asset.localIdentifier })
-        let cloudIDs = Set(cloud.index.files.map(\.id))
-        return Set(grouped.compactMap { assetID, group in
-            let complete = group.allSatisfy { candidate in
-                guard let record = recordsByKey[candidate.resourceKey] else { return false }
-                return cloudIDs.contains(record.cloudFileID)
-            }
-            return complete ? assetID : nil
-        })
+    private func updateCountersAfterCompleted(_ record: PhotoBackupRecord) {
+        guard let required = requiredResourceCountByAssetID[record.assetLocalIdentifier], required > 0 else { return }
+        let previous = backedResourceCountByAssetID[record.assetLocalIdentifier, default: 0]
+        guard previous < required else { return }
+
+        let updated = previous + 1
+        backedResourceCountByAssetID[record.assetLocalIdentifier] = updated
+        backedUpResources = min(totalResources, backedUpResources + 1)
+        pendingResources = max(0, pendingResources - 1)
+        if updated == required, fullyBackedUpAssetIDsCache.insert(record.assetLocalIdentifier).inserted {
+            backedUpAssets += 1
+            deletableAssetCount = fullyBackedUpAssetIDsCache.count
+        }
     }
 
     private var localIndexURL: URL? {
@@ -570,17 +783,69 @@ final class PhotoBackupManager: ObservableObject {
         return folder.appendingPathComponent("photo-backup-index-v1.json")
     }
 
+    private var localJournalURL: URL? {
+        localIndexURL?.deletingLastPathComponent().appendingPathComponent("photo-backup-journal-v1.jsonl")
+    }
+
     private func loadLocalIndex() {
-        guard let url = localIndexURL,
-              let data = try? Data(contentsOf: url),
-              let snapshot = try? JSONDecoder().decode(PhotoBackupSnapshot.self, from: data) else { return }
-        recordsByKey = Dictionary(uniqueKeysWithValues: snapshot.records.map { ($0.resourceKey, $0) })
+        if let url = localIndexURL,
+           let data = try? Data(contentsOf: url),
+           let snapshot = try? JSONDecoder().decode(PhotoBackupSnapshot.self, from: data) {
+            recordsByKey = Dictionary(uniqueKeysWithValues: snapshot.records.map { ($0.resourceKey, $0) })
+        }
+        if let journalURL = localJournalURL, let data = try? Data(contentsOf: journalURL) {
+            for line in data.split(separator: 0x0A) {
+                guard let event = try? JSONDecoder().decode(PhotoBackupJournalEvent.self, from: Data(line)) else { continue }
+                recordsByKey[event.record.resourceKey] = event.record
+            }
+        }
     }
 
     private func persistLocalIndex() {
         guard let url = localIndexURL else { return }
-        let snapshot = PhotoBackupSnapshot(revision: Int64(Date().timeIntervalSince1970), updatedAt: Date(), records: records)
-        if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: url, options: [.atomic]) }
+        let journalURL = localJournalURL
+        let snapshot = PhotoBackupSnapshot(
+            revision: Int64(Date().timeIntervalSince1970),
+            updatedAt: Date(),
+            records: Array(recordsByKey.values)
+        )
+        recordsSinceLocalSnapshot = 0
+        indexIOQueue.async {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            do {
+                try data.write(to: url, options: [.atomic])
+                if let journalURL { try? FileManager.default.removeItem(at: journalURL) }
+            } catch { }
+        }
+    }
+
+    private func appendLocalJournal(_ record: PhotoBackupRecord) {
+        guard let url = localJournalURL,
+              var data = try? JSONEncoder().encode(PhotoBackupJournalEvent(record: record)) else { return }
+        data.append(0x0A)
+        indexIOQueue.async {
+            if !FileManager.default.fileExists(atPath: url.path) {
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+            }
+            guard let handle = try? FileHandle(forWritingTo: url) else { return }
+            defer { try? handle.close() }
+            do {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try handle.synchronize()
+            } catch { }
+        }
+        recordsSinceLocalSnapshot += 1
+        if recordsSinceLocalSnapshot >= 100 { persistLocalIndex() }
+    }
+
+    private func checkpointRemoteIndexIfNeeded() {
+        recordsSinceRemoteSnapshot += 1
+        let age = Date().timeIntervalSince(lastRemoteSnapshotAt)
+        guard recordsSinceRemoteSnapshot >= 25 || age >= 300 else { return }
+        recordsSinceRemoteSnapshot = 0
+        lastRemoteSnapshotAt = Date()
+        syncIndexSoon(delay: 2)
     }
 
     private func syncIndexSoon(delay: TimeInterval = 8) {
@@ -594,36 +859,50 @@ final class PhotoBackupManager: ObservableObject {
         guard let chatID = telegram.savedMessagesChatID else { return }
         guard cloud.upload == nil else { syncIndexSoon(delay: 4); return }
 
-        let snapshot = PhotoBackupSnapshot(revision: Int64(Date().timeIntervalSince1970), updatedAt: Date(), records: records)
-        guard let data = try? JSONEncoder().encode(snapshot) else { return }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("TGSpeicher-Photo-Backup-Index.json")
-        do { try data.write(to: url, options: [.atomic]) } catch { return }
+        let snapshot = PhotoBackupSnapshot(
+            revision: Int64(Date().timeIntervalSince1970),
+            updatedAt: Date(),
+            records: Array(recordsByKey.values)
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TGSpeicher-Photo-Backup-Index-\(UUID().uuidString).json")
+        indexIOQueue.async {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            do { try data.write(to: url, options: [.atomic]) } catch { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard self.cloud.upload == nil else {
+                    try? FileManager.default.removeItem(at: url)
+                    self.syncIndexSoon(delay: 4)
+                    return
+                }
+                let request: [String: Any] = [
+                    "@type": "sendMessage",
+                    "chat_id": chatID,
+                    "topic_id": NSNull(),
+                    "reply_to": NSNull(),
+                    "options": NSNull(),
+                    "reply_markup": NSNull(),
+                    "input_message_content": [
+                        "@type": "inputMessageDocument",
+                        "document": ["@type": "inputFileLocal", "path": url.path],
+                        "thumbnail": NSNull(),
+                        "disable_content_type_detection": true,
+                        "caption": ["@type": "formattedText", "text": Self.marker, "entities": []]
+                    ]
+                ]
 
-        let request: [String: Any] = [
-            "@type": "sendMessage",
-            "chat_id": chatID,
-            "topic_id": NSNull(),
-            "reply_to": NSNull(),
-            "options": NSNull(),
-            "reply_markup": NSNull(),
-            "input_message_content": [
-                "@type": "inputMessageDocument",
-                "document": ["@type": "inputFileLocal", "path": url.path],
-                "thumbnail": NSNull(),
-                "disable_content_type_detection": true,
-                "caption": ["@type": "formattedText", "text": Self.marker, "entities": []]
-            ]
-        ]
-
-        telegram.sendMessageAwaitingFinal(request) { [weak self] response in
-            try? FileManager.default.removeItem(at: url)
-            guard let self else { return }
-            guard response["@type"] as? String != "error", let newID = TelegramClient.int64(response["id"]) else { return }
-            let old = self.snapshotMessageID
-            self.snapshotMessageID = newID
-            self.defaults.set(newID, forKey: "photos.snapshotMessageID")
-            if let old, old != newID {
-                self.telegram.send(["@type": "deleteMessages", "chat_id": chatID, "message_ids": [old], "revoke": true])
+                self.telegram.sendMessageAwaitingFinal(request) { [weak self] response in
+                    try? FileManager.default.removeItem(at: url)
+                    guard let self else { return }
+                    guard response["@type"] as? String != "error", let newID = TelegramClient.int64(response["id"]) else { return }
+                    let old = self.snapshotMessageID
+                    self.snapshotMessageID = newID
+                    self.defaults.set(newID, forKey: "photos.snapshotMessageID")
+                    if let old, old != newID {
+                        self.telegram.send(["@type": "deleteMessages", "chat_id": chatID, "message_ids": [old], "revoke": true])
+                    }
+                }
             }
         }
     }
@@ -644,7 +923,7 @@ final class PhotoBackupManager: ObservableObject {
             guard let self else { return }
             guard response["@type"] as? String != "error" else {
                 self.remoteIndexReady = true
-                if self.hasLibraryAccess { self.refreshLibrary() }
+                self.refreshAfterRemoteIndexReady()
                 return
             }
             let messages = response["messages"] as? [[String: Any]] ?? []
@@ -652,8 +931,7 @@ final class PhotoBackupManager: ObservableObject {
                   let messageID = TelegramClient.int64(message["id"]),
                   let fileID = self.documentFileID(from: message) else {
                 self.remoteIndexReady = true
-                if self.hasLibraryAccess { self.refreshLibrary() }
-                else { self.maybeAutoStart() }
+                self.refreshAfterRemoteIndexReady()
                 return
             }
             self.snapshotMessageID = messageID
@@ -672,8 +950,7 @@ final class PhotoBackupManager: ObservableObject {
                     self.persistLocalIndex()
                 }
                 self.remoteIndexReady = true
-                if self.hasLibraryAccess { self.refreshLibrary() }
-                else { self.maybeAutoStart() }
+                self.refreshAfterRemoteIndexReady()
             }
         }
     }
@@ -686,13 +963,45 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     private func maybeAutoStart() {
-        guard remoteIndexReady, hasLibraryAccess, autoResumeOnLaunch,
-              defaults.bool(forKey: "photos.backupEnabled"), !isRunning, !isScanningLibrary,
-              lastLibraryScanAt != nil, pendingResources > 0 else { return }
-        startBackup(nightMode: false)
+        let requestedNightMode = defaults.bool(forKey: Self.nightModeKey)
+        guard remoteIndexReady, hasLibraryAccess,
+              defaults.bool(forKey: Self.backupEnabledKey),
+              !defaults.bool(forKey: Self.pausedKey),
+              (autoResumeOnLaunch || requestedNightMode),
+              !isRunning, !isScanningLibrary, lastLibraryScanAt != nil else { return }
+
+        let hasQueuedPhoto = queue.items.contains {
+            $0.photoBackup != nil && ($0.state == .queued || $0.state == .uploading || $0.state == .failed)
+        }
+        guard pendingResources > 0 || hasQueuedPhoto else {
+            persistSession(enabled: true, paused: false, nightMode: false)
+            leaveNightMode()
+            statusText = "Photos library is fully backed up"
+            return
+        }
+        startBackup(nightMode: requestedNightMode)
+    }
+
+    private func refreshAfterRemoteIndexReady() {
+        guard hasLibraryAccess else {
+            maybeAutoStart()
+            return
+        }
+        if isScanningLibrary {
+            libraryScanGeneration = UUID()
+            isScanningLibrary = false
+        }
+        refreshLibrary()
+    }
+
+    private func persistSession(enabled: Bool, paused: Bool, nightMode: Bool) {
+        defaults.set(enabled, forKey: Self.backupEnabledKey)
+        defaults.set(paused, forKey: Self.pausedKey)
+        defaults.set(nightMode, forKey: Self.nightModeKey)
     }
 
     private func applyNightMode() {
+        defaults.set(true, forKey: Self.nightModeKey)
         if previousBrightness == nil { previousBrightness = UIScreen.main.brightness }
         if previousIdleTimerDisabled == nil { previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled }
         UIScreen.main.brightness = 0.02
@@ -705,5 +1014,24 @@ final class PhotoBackupManager: ObservableObject {
         previousBrightness = nil
         previousIdleTimerDisabled = nil
         isNightMode = false
+        defaults.set(false, forKey: Self.nightModeKey)
+    }
+
+    private func cleanupStalePhotoExports() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TGSpeicherPhotoBackup", isDirectory: true)
+        libraryScanQueue.async {
+            let manager = FileManager.default
+            guard let urls = try? manager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { return }
+            let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
+            for url in urls {
+                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                if modified < cutoff { try? manager.removeItem(at: url) }
+            }
+        }
     }
 }

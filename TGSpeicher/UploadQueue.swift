@@ -1,6 +1,15 @@
 import Foundation
 import Combine
 
+struct PhotoBackupQueueMetadata: Codable, Hashable {
+    let resourceKey: String
+    let assetLocalIdentifier: String
+    let resourceTypeRawValue: Int
+    let fileName: String
+    let mediaKind: String
+    let creationDate: Date?
+}
+
 struct QueuedUpload: Identifiable, Codable, Hashable {
     enum State: String, Codable {
         case queued
@@ -20,6 +29,9 @@ struct QueuedUpload: Identifiable, Codable, Hashable {
     var completedAt: Date?
     var state: State
     var lastError: String?
+    var cloudFileID: UUID?
+    var photoBackup: PhotoBackupQueueMetadata?
+    var automaticRetryCount: Int?
 
     init(
         id: UUID = UUID(),
@@ -29,7 +41,10 @@ struct QueuedUpload: Identifiable, Codable, Hashable {
         tagIDs: [UUID],
         byteSize: Int64,
         createdAt: Date = Date(),
-        state: State = .queued
+        state: State = .queued,
+        cloudFileID: UUID? = nil,
+        photoBackup: PhotoBackupQueueMetadata? = nil,
+        automaticRetryCount: Int? = nil
     ) {
         self.id = id
         self.localPath = localPath
@@ -39,6 +54,9 @@ struct QueuedUpload: Identifiable, Codable, Hashable {
         self.byteSize = byteSize
         self.createdAt = createdAt
         self.state = state
+        self.cloudFileID = cloudFileID
+        self.photoBackup = photoBackup
+        self.automaticRetryCount = automaticRetryCount
     }
 }
 
@@ -54,18 +72,16 @@ final class UploadQueueManager: ObservableObject {
     private let network: TGNetworkMonitor
     private var cancellables = Set<AnyCancellable>()
     private var activeID: UUID?
-    private var activeFileCount = 0
 
     init(cloud: CloudStore, preferences: AppPreferences, network: TGNetworkMonitor) {
         self.cloud = cloud
         self.preferences = preferences
         self.network = network
         load()
-        for index in items.indices where items[index].state == .uploading {
-            items[index].state = .queued
-            items[index].startedAt = nil
-        }
+        recoverStagedUploads()
+        recoverInterruptedUploads()
         persist()
+        removeRecoveredStagingReceipts()
 
         cloud.$upload
             .receive(on: RunLoop.main)
@@ -147,8 +163,63 @@ final class UploadQueueManager: ObservableObject {
         }
     }
 
-    func enqueuePreparedFile(_ url: URL, folderID: UUID?, tagIDs: [UUID] = []) {
-        enqueue(urls: [url], folderID: folderID, tagIDs: tagIDs)
+    func enqueuePreparedFile(
+        _ url: URL,
+        folderID: UUID?,
+        tagIDs: [UUID] = [],
+        photoBackup: PhotoBackupQueueMetadata? = nil
+    ) {
+        isPreparingFiles = true
+        lastError = nil
+
+        let root = queueRootURL
+        Task {
+            do {
+                let prepared = try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                    let id = UUID()
+                    let itemFolder = root.appendingPathComponent(id.uuidString, isDirectory: true)
+                    try FileManager.default.createDirectory(at: itemFolder, withIntermediateDirectories: true)
+                    let preferredName = url.lastPathComponent.isEmpty ? "Upload.bin" : url.lastPathComponent
+                    let destination = itemFolder.appendingPathComponent(preferredName)
+                    let stagedItem = QueuedUpload(
+                        id: id,
+                        localPath: destination.path,
+                        displayName: preferredName,
+                        folderID: folderID,
+                        tagIDs: tagIDs,
+                        byteSize: url.fileByteSize,
+                        photoBackup: photoBackup
+                    )
+                    let receiptURL = itemFolder.appendingPathComponent("staged-upload.json")
+                    try JSONEncoder().encode(stagedItem).write(to: receiptURL, options: [.atomic])
+
+                    do {
+                        try FileManager.default.moveItem(at: url, to: destination)
+                    } catch {
+                        try FileManager.default.copyItem(at: url, to: destination)
+                        try? FileManager.default.removeItem(at: url)
+                    }
+
+                    var preparedItem = stagedItem
+                    preparedItem.byteSize = destination.fileByteSize
+                    return preparedItem
+                }.value
+
+                items.append(prepared)
+                isPreparingFiles = false
+                persist()
+                try? FileManager.default.removeItem(
+                    at: URL(fileURLWithPath: prepared.localPath)
+                        .deletingLastPathComponent()
+                        .appendingPathComponent("staged-upload.json")
+                )
+                processNextIfPossible()
+            } catch {
+                isPreparingFiles = false
+                lastError = error.localizedDescription
+            }
+        }
     }
 
     func pause() {
@@ -160,7 +231,7 @@ final class UploadQueueManager: ObservableObject {
         processNextIfPossible()
     }
 
-    func retry(_ item: QueuedUpload) {
+    func retry(_ item: QueuedUpload, automatic: Bool = false) {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         guard FileManager.default.fileExists(atPath: items[index].localPath) else {
             items[index].state = .failed
@@ -172,6 +243,11 @@ final class UploadQueueManager: ObservableObject {
         items[index].lastError = nil
         items[index].startedAt = nil
         items[index].completedAt = nil
+        if automatic {
+            items[index].automaticRetryCount = (items[index].automaticRetryCount ?? 0) + 1
+        } else {
+            items[index].automaticRetryCount = 0
+        }
         persist()
         processNextIfPossible()
     }
@@ -217,7 +293,6 @@ final class UploadQueueManager: ObservableObject {
         items[index].startedAt = Date()
         items[index].lastError = nil
         activeID = items[index].id
-        activeFileCount = cloud.index.files.count
         let item = items[index]
         persist()
         cloud.lastError = nil
@@ -236,15 +311,11 @@ final class UploadQueueManager: ObservableObject {
         }
 
         let started = items[index].startedAt ?? .distantPast
-        let expectedName = items[index].displayName
-        let successful = cloud.index.files.count > activeFileCount || cloud.index.files.contains {
-            $0.name == expectedName && $0.modifiedAt >= started.addingTimeInterval(-2)
-        }
-
-        if successful {
+        if let uploadedFile = matchingCloudFile(for: items[index], since: started) {
             items[index].state = .completed
             items[index].completedAt = Date()
             items[index].lastError = nil
+            items[index].cloudFileID = uploadedFile.id
             cleanupLocalCopy(for: items[index])
         } else {
             items[index].state = .failed
@@ -253,6 +324,62 @@ final class UploadQueueManager: ObservableObject {
         activeID = nil
         persist()
         processNextIfPossible()
+    }
+
+    private func recoverInterruptedUploads() {
+        for index in items.indices where items[index].state == .uploading {
+            if let started = items[index].startedAt,
+               let uploadedFile = matchingCloudFile(for: items[index], since: started) {
+                items[index].state = .completed
+                items[index].completedAt = Date()
+                items[index].lastError = nil
+                items[index].cloudFileID = uploadedFile.id
+                cleanupLocalCopy(for: items[index])
+            } else {
+                items[index].state = .queued
+                items[index].startedAt = nil
+            }
+        }
+    }
+
+    private func recoverStagedUploads() {
+        let root = queueRootURL
+        guard let folders = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let knownIDs = Set(items.map(\.id))
+        for folder in folders {
+            let receipt = folder.appendingPathComponent("staged-upload.json")
+            guard let data = try? Data(contentsOf: receipt),
+                  let staged = try? JSONDecoder().decode(QueuedUpload.self, from: data) else { continue }
+            if knownIDs.contains(staged.id) { continue }
+            if FileManager.default.fileExists(atPath: staged.localPath) {
+                items.append(staged)
+            } else {
+                try? FileManager.default.removeItem(at: folder)
+            }
+        }
+    }
+
+    private func removeRecoveredStagingReceipts() {
+        for item in items {
+            let receipt = URL(fileURLWithPath: item.localPath)
+                .deletingLastPathComponent()
+                .appendingPathComponent("staged-upload.json")
+            try? FileManager.default.removeItem(at: receipt)
+        }
+    }
+
+    private func matchingCloudFile(for item: QueuedUpload, since started: Date) -> CloudFileEntry? {
+        cloud.index.files
+            .filter {
+                $0.folderID == item.folderID &&
+                $0.name == item.displayName &&
+                $0.modifiedAt >= started.addingTimeInterval(-3)
+            }
+            .max(by: { $0.modifiedAt < $1.modifiedAt })
     }
 
     private var queueRootURL: URL {

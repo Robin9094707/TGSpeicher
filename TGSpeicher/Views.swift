@@ -564,9 +564,9 @@ struct FileRow: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(.blue.opacity(0.11)).frame(width: 46, height: 46)
-                Image(systemName: file.chunks.count > 1 ? "square.stack.3d.up.fill" : "doc.fill")
-                    .foregroundStyle(.blue)
+                    .fill(file.tint.opacity(0.11)).frame(width: 46, height: 46)
+                Image(systemName: file.symbol)
+                    .foregroundStyle(file.tint)
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(file.name).lineLimit(1)

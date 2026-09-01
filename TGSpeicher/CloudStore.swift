@@ -243,7 +243,7 @@ final class CloudStore: ObservableObject {
             index.files.removeAll { $0.id == fileID }
             index.files.append(entry)
             persist()
-            FileChunker.cleanup(prepared.chunks)
+            FileChunker.cleanup(prepared)
             upload = nil
             UIApplication.shared.isIdleTimerDisabled = false
             scheduleCatalogSync(delay: 0.5)
@@ -251,7 +251,7 @@ final class CloudStore: ObservableObject {
         }
 
         guard let chatID = telegram.savedMessagesChatID else {
-            failUpload("Saved Messages became unavailable.", prepared: prepared)
+            failUpload("Saved Messages became unavailable.", prepared: prepared, uploadedChunks: collected)
             return
         }
 
@@ -295,12 +295,12 @@ final class CloudStore: ObservableObject {
         telegram.sendMessageAwaitingFinal(request) { [weak self] response in
             guard let self else { return }
             if response["@type"] as? String == "error" {
-                self.failUpload(self.friendlyTelegramError(response), prepared: prepared)
+                self.failUpload(self.friendlyTelegramError(response), prepared: prepared, uploadedChunks: collected)
                 return
             }
 
             guard let messageID = TelegramClient.int64(response["id"]) else {
-                self.failUpload("Telegram confirmed the upload but returned no final message ID.", prepared: prepared)
+                self.failUpload("Telegram confirmed the upload but returned no final message ID.", prepared: prepared, uploadedChunks: collected)
                 return
             }
 
@@ -334,8 +334,21 @@ final class CloudStore: ObservableObject {
         }
     }
 
-    private func failUpload(_ message: String, prepared: PreparedFile? = nil) {
-        if let prepared { FileChunker.cleanup(prepared.chunks) }
+    private func failUpload(
+        _ message: String,
+        prepared: PreparedFile? = nil,
+        uploadedChunks: [CloudChunk] = []
+    ) {
+        if let prepared { FileChunker.cleanup(prepared) }
+        let messageIDs = uploadedChunks.compactMap(\.telegramMessageID)
+        if let chatID = telegram.savedMessagesChatID, !messageIDs.isEmpty {
+            telegram.send([
+                "@type": "deleteMessages",
+                "chat_id": chatID,
+                "message_ids": messageIDs,
+                "revoke": true
+            ])
+        }
         upload = nil
         UIApplication.shared.isIdleTimerDisabled = false
         lastError = message

@@ -188,6 +188,16 @@ struct OptimizedDriveBrowserV2: View {
     @State private var confirmBulkDelete = false
     @State private var visibleFolderLimit = 80
     @State private var visibleFileLimit = 120
+    @State private var pendingDeleteFolder: CloudFolder?
+    @State private var pendingDeleteFile: CloudFileEntry?
+    @State private var itemActionFile: CloudFileEntry?
+    @State private var showingItemMove = false
+    @State private var showingItemTags = false
+    @State private var showingRenameItem = false
+    @State private var renameFile: CloudFileEntry?
+    @State private var renameFolder: CloudFolder?
+    @State private var renameText = ""
+    @State private var actionNavigationFileID: UUID?
 
     init(
         folderID: UUID?,
@@ -237,6 +247,9 @@ struct OptimizedDriveBrowserV2: View {
         }
         .toolbar { browserToolbar }
         .safeAreaInset(edge: .bottom) { bulkBar }
+        .navigationDestination(item: $actionNavigationFileID) { fileID in
+            FileDetailV2(fileID: fileID, cloud: cloud)
+        }
         .fullScreenCover(isPresented: $showingPicker) {
             TGDocumentPicker(
                 allowsMultipleSelection: true,
@@ -274,6 +287,36 @@ struct OptimizedDriveBrowserV2: View {
                 selectedFiles.removeAll(); isSelecting = false; showingBulkTags = false
             }
         }
+        .sheet(isPresented: $showingItemMove) {
+            if let file = itemActionFile {
+                FolderSelectionSheet(cloud: cloud) { destination in
+                    cloud.moveFile(file, to: destination)
+                    itemActionFile = nil
+                    showingItemMove = false
+                }
+            }
+        }
+        .sheet(isPresented: $showingItemTags) {
+            if let file = itemActionFile {
+                TagSelectionSheet(cloud: cloud, initialSelection: Set(file.tagIDs)) { tags in
+                    cloud.setTags(Array(tags), for: file)
+                    itemActionFile = nil
+                    showingItemTags = false
+                }
+            }
+        }
+        .sheet(isPresented: $showingRenameItem) {
+            RenameDriveItemSheet(
+                title: renameFolder == nil ? "Rename File" : "Rename Folder",
+                name: $renameText,
+                onSave: {
+                    if let renameFile { cloud.renameFile(renameFile, to: renameText) }
+                    if let renameFolder { cloud.renameFolder(renameFolder, to: renameText) }
+                    clearRenameState()
+                },
+                onCancel: clearRenameState
+            )
+        }
         .confirmationDialog("Delete \(selectedFiles.count) selected file(s) from Telegram?", isPresented: $confirmBulkDelete, titleVisibility: .visible) {
             Button("Delete from Telegram", role: .destructive) {
                 let entries = selectedEntries
@@ -281,6 +324,42 @@ struct OptimizedDriveBrowserV2: View {
                 entries.forEach(cloud.deleteFileFromTelegram)
             }
             Button("Cancel", role: .cancel) { }
+        }
+        .confirmationDialog(
+            "Delete “\(pendingDeleteFolder?.name ?? "Folder")”?",
+            isPresented: Binding(
+                get: { pendingDeleteFolder != nil },
+                set: { if !$0 { pendingDeleteFolder = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let folder = pendingDeleteFolder, folderIsEmpty(folder) {
+                Button("Delete Empty Folder", role: .destructive) {
+                    cloud.deleteFolder(folder)
+                    pendingDeleteFolder = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteFolder = nil }
+        } message: {
+            Text("Only empty folders can be deleted. This change is saved to your Telegram recovery catalog.")
+        }
+        .confirmationDialog(
+            "Delete “\(pendingDeleteFile?.name ?? "File")” from Telegram?",
+            isPresented: Binding(
+                get: { pendingDeleteFile != nil },
+                set: { if !$0 { pendingDeleteFile = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let file = pendingDeleteFile {
+                Button("Delete from Telegram", role: .destructive) {
+                    cloud.deleteFileFromTelegram(file)
+                    pendingDeleteFile = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteFile = nil }
+        } message: {
+            Text("All Telegram message parts belonging to this file will be removed. This cannot be undone in TGSpeicher.")
         }
     }
 
@@ -336,18 +415,29 @@ struct OptimizedDriveBrowserV2: View {
     }
 
     private var listBody: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
+        List {
+            Section {
                 browserHeader
-                    .padding(.bottom, 10)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
 
-                if directory.isLoading && directory.folders.isEmpty && directory.files.isEmpty {
+            if directory.isLoading && directory.folders.isEmpty && directory.files.isEmpty {
+                Section {
                     loadingState
-                } else if directory.folders.isEmpty && directory.files.isEmpty {
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            } else if directory.folders.isEmpty && directory.files.isEmpty {
+                Section {
                     EmptyDriveState(showUpload: { showingPicker = true }, showFolder: { showingNewFolder = true })
-                } else {
-                    if !visibleFolders.isEmpty {
-                        lightweightSectionTitle("Folders", count: directory.folders.count)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            } else {
+                if !visibleFolders.isEmpty {
+                    Section {
                         ForEach(visibleFolders) { folder in
                             NavigationLink {
                                 OptimizedDriveBrowserV2(
@@ -364,9 +454,12 @@ struct OptimizedDriveBrowserV2: View {
                                     usage: directory.folderUsage[folder.id] ?? TGDirectoryFolderUsage()
                                 )
                             }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button("Delete Empty Folder", systemImage: "trash", role: .destructive) { cloud.deleteFolder(folder) }
+                            .contextMenu { folderContextMenu(folder) }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) { pendingDeleteFolder = folder } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                                .disabled(!folderIsEmpty(folder))
                             }
                         }
                         if directory.folders.count > visibleFolderLimit {
@@ -375,11 +468,13 @@ struct OptimizedDriveBrowserV2: View {
                             }
                             .id("folders-\(visibleFolderLimit)")
                         }
+                    } header: {
+                        sectionHeader("Folders", count: directory.folders.count)
                     }
+                }
 
-                    if !visibleFiles.isEmpty {
-                        lightweightSectionTitle("Files", count: directory.files.count)
-                            .padding(.top, visibleFolders.isEmpty ? 0 : 8)
+                if !visibleFiles.isEmpty {
+                    Section {
                         ForEach(visibleFiles) { file in
                             if isSelecting {
                                 Button { toggleSelection(file.id) } label: {
@@ -390,16 +485,22 @@ struct OptimizedDriveBrowserV2: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) { pendingDeleteFile = file } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
                             } else {
                                 NavigationLink {
                                     FileDetailV2(fileID: file.id, cloud: cloud)
                                 } label: {
                                     OptimizedFileRow(file: file, tagName: firstTagName(file), selected: false)
                                 }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button("Download", systemImage: "arrow.down.doc") { cloud.downloadAndReassemble(file) }
-                                    Button("Delete from Telegram", systemImage: "trash", role: .destructive) { cloud.deleteFileFromTelegram(file) }
+                                .contextMenu { fileContextMenu(file) }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) { pendingDeleteFile = file } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
                                 }
                             }
                         }
@@ -409,12 +510,19 @@ struct OptimizedDriveBrowserV2: View {
                             }
                             .id("files-\(visibleFileLimit)")
                         }
+                    } header: {
+                        sectionHeader("Files", count: directory.files.count)
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 110)
+
+            Color.clear
+                .frame(height: 92)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .refreshable { cloud.bootstrapFromTelegram() }
     }
 
@@ -444,6 +552,7 @@ struct OptimizedDriveBrowserV2: View {
                                 OptimizedFolderTile(folder: folder, usage: directory.folderUsage[folder.id] ?? TGDirectoryFolderUsage())
                             }
                             .buttonStyle(.plain)
+                            .contextMenu { folderContextMenu(folder) }
                         }
 
                         ForEach(visibleFiles) { file in
@@ -452,11 +561,13 @@ struct OptimizedDriveBrowserV2: View {
                                     OptimizedFileTile(file: file, tagName: firstTagName(file), selected: selectedFiles.contains(file.id))
                                 }
                                 .buttonStyle(.plain)
+                                .contextMenu { fileContextMenu(file) }
                             } else {
                                 NavigationLink { FileDetailV2(fileID: file.id, cloud: cloud) } label: {
                                     OptimizedFileTile(file: file, tagName: firstTagName(file), selected: false)
                                 }
                                 .buttonStyle(.plain)
+                                .contextMenu { fileContextMenu(file) }
                             }
                         }
                     }
@@ -501,7 +612,7 @@ struct OptimizedDriveBrowserV2: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .tgCompactGlass(cornerRadius: 16)
         }
         .padding(.top, 4)
     }
@@ -536,10 +647,109 @@ struct OptimizedDriveBrowserV2: View {
         .padding(.vertical, 6)
     }
 
+    private func sectionHeader(_ title: String, count: Int) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text("\(count)").monospacedDigit()
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .textCase(nil)
+    }
+
+    @ViewBuilder
+    private func folderContextMenu(_ folder: CloudFolder) -> some View {
+        Button("Rename", systemImage: "pencil") { beginRename(folder) }
+        Divider()
+        if folderIsEmpty(folder) {
+            Button("Delete Empty Folder", systemImage: "trash", role: .destructive) {
+                pendingDeleteFolder = folder
+            }
+        } else {
+            Button("Folder Is Not Empty", systemImage: "folder.badge.questionmark") { }
+                .disabled(true)
+        }
+    }
+
+    @ViewBuilder
+    private func fileContextMenu(_ file: CloudFileEntry) -> some View {
+        Button("Preview & Details", systemImage: "eye.fill") { actionNavigationFileID = file.id }
+        Button("Download", systemImage: "arrow.down.doc") { cloud.downloadAndReassemble(file) }
+        Divider()
+        Button("Move", systemImage: "folder") {
+            itemActionFile = file
+            showingItemMove = true
+        }
+        Button("Tags", systemImage: "tag") {
+            itemActionFile = file
+            showingItemTags = true
+        }
+        Button("Rename", systemImage: "pencil") { beginRename(file) }
+        Divider()
+        Button("Delete from Telegram", systemImage: "trash", role: .destructive) {
+            pendingDeleteFile = file
+        }
+    }
+
+    private func folderIsEmpty(_ folder: CloudFolder) -> Bool {
+        !cloud.index.folders.contains(where: { $0.parentID == folder.id }) &&
+        !cloud.index.files.contains(where: { $0.folderID == folder.id })
+    }
+
+    private func beginRename(_ file: CloudFileEntry) {
+        renameFile = file
+        renameFolder = nil
+        renameText = file.name
+        showingRenameItem = true
+    }
+
+    private func beginRename(_ folder: CloudFolder) {
+        renameFolder = folder
+        renameFile = nil
+        renameText = folder.name
+        showingRenameItem = true
+    }
+
+    private func clearRenameState() {
+        showingRenameItem = false
+        renameFile = nil
+        renameFolder = nil
+        renameText = ""
+    }
+
     private func toggleSelection(_ id: UUID) {
         if selectedFiles.contains(id) { selectedFiles.remove(id) }
         else { selectedFiles.insert(id) }
         preferences.performHaptic()
+    }
+}
+
+private struct RenameDriveItemSheet: View {
+    let title: String
+    @Binding var name: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Name", text: $name)
+                    .textInputAutocapitalization(.sentences)
+                    .submitLabel(.done)
+                    .onSubmit(onSave)
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save", action: onSave)
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.height(220)])
     }
 }
 
@@ -560,7 +770,7 @@ private struct OptimizedMiniMetric: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .tgCompactGlass(cornerRadius: 14)
     }
 }
 
@@ -582,7 +792,6 @@ private struct OptimizedFolderRow: View {
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
-            Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 6)
@@ -601,8 +810,8 @@ private struct OptimizedFileRow: View {
     var body: some View {
         HStack(spacing: 9) {
             ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.blue.opacity(0.11))
-                Image(systemName: file.symbol).font(.body).foregroundStyle(.blue)
+                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(file.tint.opacity(0.12))
+                Image(systemName: file.symbol).font(.body).foregroundStyle(file.tint)
             }
             .frame(width: 38, height: 38)
 
@@ -616,9 +825,11 @@ private struct OptimizedFileRow: View {
                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
-            Image(systemName: selected ? "checkmark.circle.fill" : "chevron.right")
-                .foregroundStyle(selected ? Color.blue : Color.secondary)
-                .font(.caption2.weight(.semibold))
+            if selected {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.blue)
+                    .font(.caption2.weight(.semibold))
+            }
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 6)
@@ -646,7 +857,7 @@ private struct OptimizedFolderTile: View {
         }
         .frame(maxWidth: .infinity, minHeight: 110, alignment: .leading)
         .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .tgCompactGlass(cornerRadius: 16)
     }
 }
 
@@ -658,7 +869,7 @@ private struct OptimizedFileTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Image(systemName: file.symbol).font(.title).foregroundStyle(.blue)
+                Image(systemName: file.symbol).font(.title).foregroundStyle(file.tint)
                 Spacer()
                 if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(.blue) }
             }
@@ -670,7 +881,7 @@ private struct OptimizedFileTile: View {
         }
         .frame(maxWidth: .infinity, minHeight: 120, alignment: .leading)
         .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .tgCompactGlass(cornerRadius: 16)
     }
 }
 
@@ -690,6 +901,21 @@ private struct ProgressiveLoadSentinel: View {
             guard !didTrigger else { return }
             didTrigger = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { load() }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func tgCompactGlass(cornerRadius: CGFloat) -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+        } else {
+            background(.thinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(.white.opacity(0.08), lineWidth: 0.6)
+                }
         }
     }
 }
