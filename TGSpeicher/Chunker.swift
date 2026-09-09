@@ -7,8 +7,8 @@ enum ChunkerError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidFile: return "The selected file could not be read."
-        case .cannotCreateOutput: return "TGSpeicher could not create a temporary upload file."
+        case .invalidFile: return "Die ausgewählte Datei konnte nicht gelesen werden."
+        case .cannotCreateOutput: return "Die temporäre Upload-Datei konnte nicht angelegt werden."
         }
     }
 }
@@ -165,3 +165,4 @@ enum FileChunker {
         digest.map { String(format: "%02x", $0) }.joined()
     }
 }
+

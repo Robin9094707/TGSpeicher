@@ -79,6 +79,7 @@ final class UploadQueueManager: ObservableObject {
     private var activeID: UUID?
     private var pendingCleanupItems: [UUID: DispatchWorkItem] = [:]
     private var preparingPhotoResourceKeys = Set<String>()
+    private var hashingItemIDs = Set<UUID>()
 
     init(cloud: CloudStore, preferences: AppPreferences, network: TGNetworkMonitor) {
         self.cloud = cloud
@@ -86,6 +87,9 @@ final class UploadQueueManager: ObservableObject {
         self.network = network
         load()
         recoverStagedUploads()
+        if let owner = cloud.index.recovery?.accountID, owner != 0 {
+            for i in items.indices where items[i].accountID == nil { items[i].accountID = owner }
+        }
         recoverInterruptedUploads()
         deduplicatePhotoBackupItems()
         persist()
@@ -155,6 +159,7 @@ final class UploadQueueManager: ObservableObject {
         lastError = nil
 
         let root = queueRootURL
+        let ownerAccountID = cloud.telegram.savedMessagesChatID
         Task {
             do {
                 let prepared = try await Task.detached(priority: .userInitiated) {
@@ -182,11 +187,20 @@ final class UploadQueueManager: ObservableObject {
                                 byteSize: destination.fileByteSize
                             )
                         )
+                        if var receipt = result.last {
+                            receipt.accountID = ownerAccountID
+                            try JSONEncoder().encode(receipt).write(to: itemFolder.appendingPathComponent("staged-upload.json"), options: [.atomic])
+                        }
                     }
                     return result
                 }.value
 
-                items.append(contentsOf: prepared)
+                let owned = prepared.map { item -> QueuedUpload in
+                    var item = item
+                    item.accountID = ownerAccountID
+                    return item
+                }
+                items.append(contentsOf: owned)
                 isPreparingFiles = false
                 persist()
                 processNextIfPossible()
@@ -217,6 +231,7 @@ final class UploadQueueManager: ObservableObject {
         lastError = nil
 
         let root = queueRootURL
+        let ownerAccountID = cloud.telegram.savedMessagesChatID
         Task {
             do {
                 let prepared = try await Task.detached(priority: .userInitiated) {
@@ -226,13 +241,13 @@ final class UploadQueueManager: ObservableObject {
                     try FileManager.default.createDirectory(at: itemFolder, withIntermediateDirectories: true)
                     let stagedName: String
                     if photoBackup?.nativeMedia?.kind == "photo" {
-                        let original = photoBackup?.fileName ?? "Photo"
+                        let original = photoBackup?.fileName ?? "Foto"
                         stagedName = (original as NSString).deletingPathExtension + ".jpg"
                     } else {
                         stagedName = url.lastPathComponent.isEmpty ? "Upload.bin" : url.lastPathComponent
                     }
                     let destination = itemFolder.appendingPathComponent(stagedName)
-                    let stagedItem = QueuedUpload(
+                    var stagedItem = QueuedUpload(
                         id: id,
                         localPath: destination.path,
                         displayName: photoBackup?.fileName ?? stagedName,
@@ -241,6 +256,7 @@ final class UploadQueueManager: ObservableObject {
                         byteSize: url.fileByteSize,
                         photoBackup: photoBackup
                     )
+                    stagedItem.accountID = ownerAccountID
                     let receiptURL = itemFolder.appendingPathComponent("staged-upload.json")
                     try JSONEncoder().encode(stagedItem).write(to: receiptURL, options: [.atomic])
 
@@ -297,7 +313,7 @@ final class UploadQueueManager: ObservableObject {
         cancelPendingCleanup(for: item.id)
         guard FileManager.default.fileExists(atPath: items[index].localPath) else {
             items[index].state = .failed
-            items[index].lastError = "The queued local copy is missing. Add the file again."
+            items[index].lastError = "Die lokale Kopie fehlt. Bitte füge die Datei erneut hinzu."
             if automatic {
                 items[index].automaticRetryCount = (items[index].automaticRetryCount ?? 0) + 1
             }
@@ -349,6 +365,34 @@ final class UploadQueueManager: ObservableObject {
         guard let index = items.firstIndex(where: { $0.state == .queued && ($0.accountID == nil || $0.accountID == account) }) else { return }
         items[index].accountID = account
 
+        if items[index].photoBackup != nil, items[index].cloudFileID == nil,
+           matchingCloudFile(for: items[index]) == nil,
+           FileManager.default.fileExists(atPath: items[index].localPath) {
+            let item = items[index]
+            guard hashingItemIDs.insert(item.id).inserted else { return }
+            let chat = item.photoBackup?.destinationChatID ?? account
+            Task {
+                do {
+                    let hash = try await Task.detached(priority: .utility) {
+                        try FileChunker.sha256(of: URL(fileURLWithPath: item.localPath))
+                    }.value
+                    if let i = items.firstIndex(where: { $0.id == item.id }) {
+                        items[i].cloudFileID = CatalogCodec.stableMediaID(hash: hash, chatID: chat)
+                    }
+                    persist()
+                } catch {
+                    if let i = items.firstIndex(where: { $0.id == item.id }) {
+                        items[i].state = .failed
+                        items[i].lastError = "Die lokale Datei konnte nicht geprüft werden: \(error.localizedDescription)"
+                    }
+                    persist()
+                }
+                hashingItemIDs.remove(item.id)
+                processNextIfPossible()
+            }
+            return
+        }
+
         let stableCloudFileID = items[index].cloudFileID ?? items[index].id
         items[index].cloudFileID = stableCloudFileID
         if let existing = matchingCloudFile(for: items[index]) {
@@ -365,7 +409,7 @@ final class UploadQueueManager: ObservableObject {
         cancelPendingCleanup(for: items[index].id)
         guard FileManager.default.fileExists(atPath: url.path) else {
             items[index].state = .failed
-            items[index].lastError = "The queued local copy no longer exists."
+            items[index].lastError = "Die lokale Datei in der Warteschlange ist nicht mehr vorhanden."
             persist()
             processNextIfPossible()
             return
@@ -416,7 +460,7 @@ final class UploadQueueManager: ObservableObject {
             cleanupLocalCopy(for: items[index], after: 30)
         } else {
             items[index].state = .failed
-            items[index].lastError = cloud.lastError ?? "Upload did not complete. You can retry it from Transfers."
+            items[index].lastError = cloud.lastUploadFailure ?? cloud.lastError ?? "Upload nicht abgeschlossen. Du kannst ihn unter „Übertragungen“ erneut prüfen."
         }
         activeID = nil
         persist()

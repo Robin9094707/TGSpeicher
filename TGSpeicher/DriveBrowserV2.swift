@@ -45,7 +45,7 @@ struct DriveBrowserV2: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(folderID == nil ? .large : .inline)
-        .searchable(text: $searchText, prompt: "Files, folders or tags")
+        .searchable(text: $searchText, prompt: "Dateien, Ordner oder Tags")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
@@ -57,20 +57,20 @@ struct DriveBrowserV2: View {
                 }
 
                 Menu {
-                    Picker("View", selection: $preferences.driveViewMode) {
+                    Picker("Ansicht", selection: $preferences.driveViewMode) {
                         ForEach(TGDriveViewMode.allCases) { mode in
                             Label(mode.label, systemImage: mode.icon).tag(mode)
                         }
                     }
-                    Picker("Sort", selection: $preferences.sortMode) {
+                    Picker("Sortieren", selection: $preferences.sortMode) {
                         ForEach(TGDriveSortMode.allCases) { mode in Text(mode.label).tag(mode) }
                     }
                     Divider()
-                    Button("Upload Files", systemImage: "arrow.up.doc") { showingPicker = true }
-                    Button("Upload from URL", systemImage: "link.badge.plus") { showingRemoteURL = true }
-                    Button("New Folder", systemImage: "folder.badge.plus") { showingNewFolder = true }
+                    Button("Dateien hochladen", systemImage: "arrow.up.doc") { showingPicker = true }
+                    Button("Von einem Link hochladen", systemImage: "link.badge.plus") { showingRemoteURL = true }
+                    Button("Neuer Ordner", systemImage: "folder.badge.plus") { showingNewFolder = true }
                     Divider()
-                    Button("Refresh from Telegram", systemImage: "arrow.triangle.2.circlepath") { cloud.bootstrapFromTelegram() }
+                    Button("Mit Telegram abgleichen", systemImage: "arrow.triangle.2.circlepath") { cloud.bootstrapFromTelegram() }
                 } label: {
                     Image(systemName: "plus.circle.fill")
                 }
@@ -126,13 +126,13 @@ struct DriveBrowserV2: View {
                 selectedFiles.removeAll(); isSelecting = false; showingBulkTags = false
             }
         }
-        .confirmationDialog("Delete \(selectedFiles.count) selected file(s) from Telegram?", isPresented: $confirmBulkDelete, titleVisibility: .visible) {
-            Button("Delete from Telegram", role: .destructive) {
+        .confirmationDialog("\(selectedFiles.count) ausgewählte Dateien aus Telegram löschen?", isPresented: $confirmBulkDelete, titleVisibility: .visible) {
+            Button("Aus Telegram löschen", role: .destructive) {
                 let entries = selectedEntries
                 selectedFiles.removeAll(); isSelecting = false
                 entries.forEach(cloud.deleteFileFromTelegram)
             }
-            Button("Cancel", role: .cancel) { }
+            Button("Abbrechen", role: .cancel) { }
         }
     }
 
@@ -162,7 +162,7 @@ struct DriveBrowserV2: View {
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
-                            Button("Delete Empty Folder", systemImage: "trash", role: .destructive) { cloud.deleteFolder(folder) }
+                            Button("Leeren Ordner löschen", systemImage: "trash", role: .destructive) { cloud.deleteFolder(folder) }
                         }
                     }
 
@@ -180,8 +180,8 @@ struct DriveBrowserV2: View {
                             }
                             .buttonStyle(.plain)
                             .contextMenu {
-                                Button("Download", systemImage: "arrow.down.doc") { cloud.downloadAndReassemble(file) }
-                                Button("Delete from Telegram", systemImage: "trash", role: .destructive) { cloud.deleteFileFromTelegram(file) }
+                                Button("Herunterladen", systemImage: "arrow.down.doc") { cloud.downloadAndReassemble(file) }
+                                Button("Aus Telegram löschen", systemImage: "trash", role: .destructive) { cloud.deleteFileFromTelegram(file) }
                             }
                         }
                     }
@@ -240,15 +240,15 @@ struct DriveBrowserV2: View {
     private var browserHeader: some View {
         VStack(spacing: 9) {
             HStack(spacing: 8) {
-                MiniMetric(title: "Files", value: "\(cloud.recursiveFolderFileCount(folderID))", icon: "doc.fill")
-                MiniMetric(title: "Size", value: cloud.recursiveFolderBytes(folderID).byteCountString, icon: "externaldrive.fill")
-                MiniMetric(title: "Queue", value: "\(queue.queuedCount)", icon: "arrow.up.circle.fill")
+                MiniMetric(title: "Dateien", value: "\(cloud.recursiveFolderFileCount(folderID))", icon: "doc.fill")
+                MiniMetric(title: "Größe", value: cloud.recursiveFolderBytes(folderID).byteCountString, icon: "externaldrive.fill")
+                MiniMetric(title: "Warteschlange", value: "\(queue.queuedCount)", icon: "arrow.up.circle.fill")
             }
             if folderID == nil {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Telegram cloud workspace").font(.headline)
-                        Text("\(cloud.totalTrackedBytes.byteCountString) across \(cloud.index.files.count) tracked files")
+                        Text("Dein Telegram-Speicher").font(.headline)
+                        Text("\(cloud.totalTrackedBytes.byteCountString) in \(cloud.index.files.count) Dateien")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -259,7 +259,7 @@ struct DriveBrowserV2: View {
             } else {
                 HStack(spacing: 8) {
                     Image(systemName: "info.circle.fill").foregroundStyle(.orange)
-                    Text("This folder including subfolders: \(cloud.recursiveFolderFileCount(folderID)) files • \(cloud.recursiveFolderBytes(folderID).byteCountString)")
+                    Text("Inklusive Unterordner: \(cloud.recursiveFolderFileCount(folderID)) Dateien • \(cloud.recursiveFolderBytes(folderID).byteCountString)")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                 }
@@ -305,7 +305,7 @@ struct FolderRowV2: View {
             .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(folder.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                Text("\(cloud.recursiveFolderFileCount(folder.id)) files • \(cloud.recursiveFolderBytes(folder.id).byteCountString)")
+                Text("\(cloud.recursiveFolderFileCount(folder.id)) Dateien • \(cloud.recursiveFolderBytes(folder.id).byteCountString)")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
@@ -334,7 +334,7 @@ struct FileRowV2: View {
                 Text(file.name).font(.subheadline.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
                 HStack(spacing: 4) {
                     Text(file.totalSize.byteCountString)
-                    if file.chunks.count > 1 { Text("• \(file.chunks.count) parts") }
+                    if file.chunks.count > 1 { Text("• \(file.chunks.count) Teile") }
                     let tags = cloud.tags.filter { file.tagIDs.contains($0.id) }.map(\.name)
                     if let first = tags.first { Text("• #\(first)") }
                 }
@@ -360,7 +360,7 @@ struct FolderTileV2: View {
                 Image(systemName: "chevron.right").foregroundStyle(.tertiary)
             }
             Text(folder.name).font(.headline).foregroundStyle(.primary).lineLimit(2)
-            Text("\(cloud.recursiveFolderFileCount(folder.id)) files • \(cloud.recursiveFolderBytes(folder.id).byteCountString)")
+            Text("\(cloud.recursiveFolderFileCount(folder.id)) Dateien • \(cloud.recursiveFolderBytes(folder.id).byteCountString)")
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, minHeight: 128, alignment: .leading)
@@ -398,12 +398,12 @@ struct EmptyDriveState: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "externaldrive.badge.plus").font(.system(size: 48)).foregroundStyle(.blue)
-            Text("This folder is empty").font(.title3.bold())
-            Text("Upload files, add a remote URL, or create a folder. Everything stays linked to your Telegram account.")
+            Text("Dieser Ordner ist leer").font(.title3.bold())
+            Text("Lade Dateien hoch, füge einen Link hinzu oder erstelle einen Ordner. Alles bleibt deinem Telegram-Konto zugeordnet.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             HStack {
-                Button("Upload", systemImage: "arrow.up.doc", action: showUpload).buttonStyle(.borderedProminent)
-                Button("Folder", systemImage: "folder.badge.plus", action: showFolder).buttonStyle(.bordered)
+                Button("Hochladen", systemImage: "arrow.up.doc", action: showUpload).buttonStyle(.borderedProminent)
+                Button("Ordner", systemImage: "folder.badge.plus", action: showFolder).buttonStyle(.bordered)
             }
         }
         .frame(maxWidth: .infinity)
@@ -426,7 +426,7 @@ struct BulkActionBar: View {
             Button(action: onTags) { Image(systemName: "tag") }
             Button(role: .destructive) { onDelete() } label: { Image(systemName: "trash") }
             Spacer()
-            Button("Done", action: onCancel).fontWeight(.semibold)
+            Button("Fertig", action: onCancel).fontWeight(.semibold)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
@@ -460,3 +460,4 @@ private extension View {
         }
     }
 }
+

@@ -9,11 +9,12 @@ final class CloudStore: ObservableObject {
     @Published var isRefreshing = false
     @Published var isDownloading = false
     @Published var isCatalogSyncing = false
-    @Published var catalogStatus = "Local index"
+    @Published var catalogStatus = "Lokaler Katalog"
     @Published var localInboxFiles: [URL] = []
     @Published var lastExportURL: URL?
     @Published var lastDownloadedFileID: UUID?
     @Published var lastError: String?
+    var lastUploadFailure: String?
 
     let telegram: TelegramClient
     private let ioQueue = DispatchQueue(label: "eu.simplexsmp.tgspeicher.io", qos: .userInitiated)
@@ -35,6 +36,8 @@ final class CloudStore: ObservableObject {
     var recoveryNextCursor: Int64 = 0
     var recoverySearchMarker = "#TGSpeicherCatalogSnapshotV3"
     var scannedRecoveryFiles: [UUID: CloudFileEntry] = [:]
+    var knownRecoveryFileIDs = Set<UUID>()
+    var recoveryPageFiles: [CloudFileEntry] = []
     var scanHighWater: Int64 = 0
     var pendingDestinationID: Int64?
     var catalogMutation: Int64 = 0
@@ -46,7 +49,7 @@ final class CloudStore: ObservableObject {
     func checkpointBeforeNextUpload() -> Bool {
         guard recoveryReady, upload == nil, !isRefreshing, !isCatalogSyncing,
               catalogMutation != lastSuccessfulMutation,
-              Date() >= nextCheckpointAttempt else { return false }
+              Date() >= nextCheckpointAttempt || forceNextCatalog else { return false }
         nextCheckpointAttempt = Date().addingTimeInterval(45)
         beginCatalogSync(force: true)
         return isCatalogSyncing
@@ -154,7 +157,7 @@ final class CloudStore: ObservableObject {
         let hasChildren = index.folders.contains { $0.parentID == folder.id }
         let hasFiles = index.files.contains { $0.folderID == folder.id }
         guard !hasChildren, !hasFiles else {
-            lastError = "This folder is not empty. Move or delete its contents first."
+            lastError = "Dieser Ordner ist nicht leer. Verschiebe oder lösche zuerst seinen Inhalt."
             return
         }
         index.recovery?.deletedFolders[folder.id] = Date()
@@ -220,18 +223,20 @@ final class CloudStore: ObservableObject {
         nativeMedia: NativeMediaUploadDescriptor? = nil,
         photoBackup: PhotoBackupQueueMetadata? = nil
     ) -> UUID? {
+        guard recoveryReady, !isRefreshing else { lastError = "Bitte zuerst den Telegram-Katalog wiederherstellen."; return nil }
         guard upload == nil else {
-            lastError = "Another upload is already running. TGSpeicher serializes uploads to protect the Telegram session."
+            lastError = "Ein anderer Upload läuft bereits. Die Dateien werden nacheinander übertragen."
             return nil
         }
         guard let chatID = destinationChatID ?? telegram.savedMessagesChatID else {
-            lastError = "The Telegram backup destination is not ready yet."
+            lastError = "Das Telegram-Sicherungsziel ist noch nicht bereit."
             return nil
         }
 
         // Queue retries reuse the same ID. If the app is reopened after Telegram
         // accepted a file, the persisted cloud entry can be recognized instead of
         // creating a second logical upload with a fresh ID.
+        lastUploadFailure = nil
         let fileID = stableFileID ?? UUID()
         let total = url.fileByteSize
         let createdAt = Date()
@@ -243,7 +248,7 @@ final class CloudStore: ObservableObject {
             totalBytes: total,
             currentPart: 0,
             partCount: 1,
-            status: "Preparing and hashing…"
+            status: "Datei und Prüfsumme werden vorbereitet …"
         )
 
         if let nativeMedia,
@@ -296,14 +301,14 @@ final class CloudStore: ObservableObject {
                     DispatchQueue.main.async {
                         self.upload?.completedBytes = completed
                         self.upload?.totalBytes = total
-                        self.upload?.status = "Splitting and verifying…"
+                        self.upload?.status = "Datei wird aufgeteilt und geprüft …"
                     }
                 }
 
                 DispatchQueue.main.async {
                     self.upload?.completedBytes = 0
                     self.upload?.partCount = prepared.chunks.count
-                    self.upload?.status = "Uploading to Telegram…"
+                    self.upload?.status = "Wird zu Telegram hochgeladen …"
                     UIApplication.shared.isIdleTimerDisabled = true
                     self.sendPreparedChunks(
                         prepared,
@@ -340,7 +345,7 @@ final class CloudStore: ObservableObject {
         createdAt: Date,
         mimeType: String?
     ) {
-        upload?.status = descriptor.kind == "video" ? "Sending streamable video…" : "Sending Telegram photo…"
+        upload?.status = descriptor.kind == "video" ? "Video wird gesendet …" : "Foto wird gesendet …"
         UIApplication.shared.isIdleTimerDisabled = true
         let manifest = TGManifest(
             format: 3,
@@ -416,7 +421,7 @@ final class CloudStore: ObservableObject {
                 }
                 // Unsupported codecs and Telegram-side media validation fall back to the
                 // durable chunked document format without losing the queue item.
-                self.upload?.status = "Media format unavailable • saving as file…"
+                self.upload?.status = "Medienformat nicht unterstützt • wird als Datei gesichert …"
                 self.prepareDocumentUpload(
                     url: url, chatID: chatID, fileID: fileID, folderID: folderID,
                     tagIDs: tagIDs, sourceKey: sourceKey, createdAt: createdAt, mimeType: mimeType
@@ -425,7 +430,7 @@ final class CloudStore: ObservableObject {
             }
             guard let messageID = TelegramClient.int64(response["id"]) else {
                 self.upload = nil
-                self.lastError = "Telegram confirmed the media but returned no final message ID."
+                self.lastError = "Telegram hat das Medium bestätigt, aber keine endgültige Nachrichten-ID zurückgegeben."
                 UIApplication.shared.isIdleTimerDisabled = false
                 return
             }
@@ -484,6 +489,7 @@ final class CloudStore: ObservableObject {
             )
             index.files.removeAll { $0.id == fileID }
             index.files.append(entry)
+            index.recovery?.partialFiles.removeAll { $0.id == fileID }
             persist()
             cleanupPreparedFileAfterTelegramRelease(prepared)
             upload = nil
@@ -498,7 +504,7 @@ final class CloudStore: ObservableObject {
 
         let chunk = prepared.chunks[position]
         upload?.currentPart = chunk.index
-        upload?.status = chunk.count == 1 ? "Uploading file…" : "Uploading part \(chunk.index) of \(chunk.count)…"
+        upload?.status = chunk.count == 1 ? "Datei wird hochgeladen …" : "Teil \(chunk.index) von \(chunk.count) wird hochgeladen …"
 
         let manifest = TGManifest(
             format: 2,
@@ -515,6 +521,24 @@ final class CloudStore: ObservableObject {
             sha256: chunk.sha256,
             sourceKey: sourceKey
         )
+
+        if let recovered = index.recovery?.partialFiles.first(where: { $0.id == fileID && $0.telegramChatID == chatID })?
+            .chunks.first(where: { $0.index == chunk.index && $0.count == chunk.count && $0.sha256 == chunk.sha256 }),
+           let messageID = recovered.telegramMessageID {
+            telegram.send(["@type": "getMessage", "chat_id": chatID, "message_id": messageID]) { [weak self] response in
+                guard let self else { return }
+                guard DurableOutbox.isFinal(response) else {
+                    self.failUpload("Ein bereits gesicherter Dateiteil ist momentan nicht erreichbar. Es wird keine zweite Kopie gesendet.", prepared: prepared)
+                    return
+                }
+                var next = collected
+                next.append(recovered)
+                self.sendPreparedChunks(prepared, position: position + 1, fileID: fileID, originalName: originalName,
+                    folderID: folderID, tagIDs: tagIDs, sourceKey: sourceKey, mimeType: mimeType, createdAt: createdAt,
+                    collected: next, chatID: chatID)
+            }
+            return
+        }
 
         let operation = DurableOutbox.token(fileID: fileID, part: chunk.index, kind: "document")
 
@@ -544,7 +568,7 @@ final class CloudStore: ObservableObject {
             }
 
             guard let messageID = TelegramClient.int64(response["id"]) else {
-                self.failUpload("Telegram confirmed the upload but returned no final message ID.", prepared: prepared, uploadedChunks: collected, chatID: chatID)
+                self.failUpload("Telegram hat den Upload bestätigt, aber keine endgültige Nachrichten-ID zurückgegeben.", prepared: prepared, uploadedChunks: collected, chatID: chatID)
                 return
             }
 
@@ -587,6 +611,7 @@ final class CloudStore: ObservableObject {
         chatID: Int64? = nil
     ) {
         if let prepared { FileChunker.cleanup(prepared) }
+        lastUploadFailure = message
         lastError = message
         upload = nil
         UIApplication.shared.isIdleTimerDisabled = false
@@ -624,7 +649,7 @@ final class CloudStore: ObservableObject {
         syncingMutation = catalogMutation
         isCatalogSyncing = true
         catalogNeedsAnotherSync = false
-        catalogStatus = "Saving catalog…"
+        catalogStatus = "Katalog wird gesichert …"
         let revision = max(index.revision + 1, Int64(Date().timeIntervalSince1970))
         let snapshot = CatalogSnapshot(
             revision: revision,
@@ -689,7 +714,7 @@ final class CloudStore: ObservableObject {
                             return
                         }
                         guard let snapshotID = TelegramClient.int64(response["id"]) else {
-                            self.finishCatalogFailure(["@type": "error", "message": "Catalog snapshot has no final message ID."])
+                            self.finishCatalogFailure(["@type": "error", "message": "Die Katalogsicherung hat keine endgültige Nachrichten-ID."])
                             return
                         }
                         self.updateCatalogPointer(chatID: chatID, revision: revision, snapshotMessageID: snapshotID)
@@ -699,7 +724,7 @@ final class CloudStore: ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.isCatalogSyncing = false
-                    self.catalogStatus = "Catalog error"
+                    self.catalogStatus = "Katalogfehler"
                     self.lastError = error.localizedDescription
                 }
             }
@@ -709,7 +734,7 @@ final class CloudStore: ObservableObject {
     func scheduleCatalogSync(delay: TimeInterval = 1.5) {
         guard recoveryReady else { return }
         if catalogWorkItem != nil { return }
-        catalogStatus = "Catalog update pending"
+        catalogStatus = "Katalogsicherung ausstehend"
         if isCatalogSyncing {
             catalogNeedsAnotherSync = true
             return
@@ -763,7 +788,7 @@ final class CloudStore: ObservableObject {
                 return
             }
             guard let pointerID = TelegramClient.int64(response["id"]) else {
-                self.finishCatalogFailure(["@type": "error", "message": "Catalog pointer has no final message ID."])
+                self.finishCatalogFailure(["@type": "error", "message": "Der Katalogverweis hat keine endgültige Nachrichten-ID."])
                 return
             }
             self.finishCatalogSuccess(pointerID: pointerID, snapshotID: snapshotMessageID, revision: revision)
@@ -782,7 +807,7 @@ final class CloudStore: ObservableObject {
         persist()
         refreshRecoveryAnchor()
         isCatalogSyncing = false
-        catalogStatus = "Catalog synced • r\(revision)"
+        catalogStatus = "Katalog gesichert • Version \(revision)"
 
         if catalogNeedsAnotherSync || catalogMutation != syncingMutation {
             catalogNeedsAnotherSync = false
@@ -794,13 +819,13 @@ final class CloudStore: ObservableObject {
         isCatalogSyncing = false
         let rawMessage = response["message"] as? String ?? ""
         if rawMessage.localizedCaseInsensitiveContains("real file path") {
-            catalogStatus = "Catalog retry pending"
+            catalogStatus = "Katalogsicherung wird erneut versucht"
             catalogNeedsAnotherSync = true
             scheduleCatalogSync(delay: 8)
             return
         }
         if let wait = TelegramClient.retryAfterSeconds(response) {
-            catalogStatus = "Rate limited • retry in \(wait)s"
+            catalogStatus = "Telegram-Pause • erneuter Versuch in \(wait) s"
             catalogNeedsAnotherSync = true
             scheduleCatalogSync(delay: TimeInterval(wait + 1))
         } else {
@@ -829,7 +854,7 @@ final class CloudStore: ObservableObject {
     func downloadAndReassemble(_ file: CloudFileEntry) {
         guard !isDownloading else { return }
         guard !file.chunks.isEmpty else {
-            lastError = "This file has no Telegram chunks."
+            lastError = "Für diese Datei sind keine Telegram-Dateiteile gespeichert."
             return
         }
         isDownloading = true
@@ -855,7 +880,7 @@ final class CloudStore: ObservableObject {
                 resolveFreshChunkFiles(file: file, position: position + 1, resolved: next)
             } else {
                 isDownloading = false
-                lastError = "Chunk \(chunk.index) has no Telegram message ID. Restore the catalog or rebuild the index."
+                lastError = "Dateiteil \(chunk.index) hat keine Telegram-Nachrichten-ID. Bitte den Katalog wiederherstellen."
             }
             return
         }
@@ -888,7 +913,7 @@ final class CloudStore: ObservableObject {
         }
         guard let fileID = chunks[position].telegramFileID else {
             isDownloading = false
-            lastError = "Telegram file identifier is missing for part \(chunks[position].index)."
+            lastError = "Für Teil \(chunks[position].index) fehlt die Telegram-Dateikennung."
             return
         }
         telegram.send([
@@ -909,7 +934,7 @@ final class CloudStore: ObservableObject {
                   local["is_downloading_completed"] as? Bool == true,
                   let path = local["path"] as? String, !path.isEmpty else {
                 self.isDownloading = false
-                self.lastError = "Telegram did not provide a completed local chunk."
+                self.lastError = "Telegram hat keinen vollständig geladenen Dateiteil bereitgestellt."
                 return
             }
             var next = localURLs; next.append(URL(fileURLWithPath: path))
@@ -920,7 +945,7 @@ final class CloudStore: ObservableObject {
     private func assembleDownloadedChunks(_ chunks: [URL], file: CloudFileEntry) {
         guard let downloads = downloadsFolderURL else {
             isDownloading = false
-            lastError = "TGSpeicher could not open its Downloads folder."
+            lastError = "Der Download-Ordner konnte nicht geöffnet werden."
             return
         }
         let destination = uniqueDestination(in: downloads, preferredName: file.name)
@@ -932,7 +957,7 @@ final class CloudStore: ObservableObject {
                     let actual = try FileChunker.sha256(of: destination)
                     guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
                         try? FileManager.default.removeItem(at: destination)
-                        throw NSError(domain: "TGSpeicher", code: 1002, userInfo: [NSLocalizedDescriptionKey: "SHA-256 verification failed after download. The rebuilt file was removed."])
+                        throw NSError(domain: "TGSpeicher", code: 1002, userInfo: [NSLocalizedDescriptionKey: "Die SHA-256-Prüfung ist fehlgeschlagen. Die unvollständige Download-Datei wurde entfernt."])
                     }
                 }
                 DispatchQueue.main.async {
@@ -1000,6 +1025,8 @@ final class CloudStore: ObservableObject {
     }
 
     private func uniqueDestination(in folder: URL, preferredName: String) -> URL {
+        let baseName = (preferredName as NSString).lastPathComponent
+        let preferredName = baseName.isEmpty || baseName == "." || baseName == ".." ? "Datei" : baseName
         let fm = FileManager.default
         var candidate = folder.appendingPathComponent(preferredName)
         guard fm.fileExists(atPath: candidate.path) else { return candidate }
@@ -1024,6 +1051,7 @@ final class CloudStore: ObservableObject {
 
     private func persistAndScheduleCatalog() {
         catalogMutation += 1
+        forceNextCatalog = true
         persist()
         scheduleCatalogSync()
     }
@@ -1108,9 +1136,9 @@ final class CloudStore: ObservableObject {
 
     func friendlyTelegramError(_ response: [String: Any]) -> String {
         if let wait = TelegramClient.retryAfterSeconds(response) {
-            return "Telegram rate limit: wait about \(wait) seconds and try again."
+            return "Telegram begrenzt die Anfragen. Bitte etwa \(wait) Sekunden warten."
         }
-        return (response["message"] as? String ?? "Telegram returned an error.")
+        return (response["message"] as? String ?? "Telegram hat einen Fehler gemeldet.")
             .replacingOccurrences(of: "_", with: " ")
     }
 
@@ -1125,7 +1153,17 @@ final class CloudStore: ObservableObject {
         guard let url = localIndexURL else { return }
         for candidate in [url, url.appendingPathExtension("previous")] {
             if let data = try? Data(contentsOf: candidate), let value = try? JSONDecoder().decode(CloudIndex.self, from: data) {
-                index = value
+                var candidateIndex = value
+                let partial = value.files.filter { !$0.isComplete }
+                candidateIndex.files.removeAll { !$0.isComplete }
+                if !partial.isEmpty {
+                    if candidateIndex.recovery == nil { candidateIndex.recovery = RecoveryMetadata(accountID: 0) }
+                    candidateIndex.recovery?.partialFiles.append(contentsOf: partial)
+                }
+                let snapshot = CatalogSnapshot(revision: value.revision, createdAt: Date(), folders: candidateIndex.folders,
+                    files: candidateIndex.files, tags: candidateIndex.tags, recovery: candidateIndex.recovery)
+                guard (try? CatalogCodec.validate(snapshot)) != nil else { continue }
+                index = candidateIndex
                 return
             }
         }

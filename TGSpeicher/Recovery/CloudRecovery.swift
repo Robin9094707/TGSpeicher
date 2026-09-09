@@ -9,7 +9,7 @@ extension CloudStore {
         isRefreshing = true
         lastError = nil
         catalogStatus = "Katalog wird in Telegram gesucht …"
-        if let owner = index.recovery?.accountID, owner != account {
+        if let owner = index.recovery?.accountID, owner != 0, owner != account {
             if let url = localIndexURL, let data = try? JSONEncoder().encode(index) {
                 try? data.write(to: url.deletingLastPathComponent().appendingPathComponent("catalog-account-\(owner).json"), options: [.atomic])
                 let other = url.deletingLastPathComponent().appendingPathComponent("catalog-account-\(account).json")
@@ -17,6 +17,7 @@ extension CloudStore {
             } else { index = CloudIndex() }
         }
         if index.recovery == nil { index.recovery = RecoveryMetadata(accountID: account) }
+        index.recovery?.accountID = account
         if let anchor = KeychainStore.recoveryAnchor(accountID: account) {
             index.recovery?.destinationChatID = index.recovery?.destinationChatID ?? anchor.destinationChatID
         }
@@ -35,6 +36,7 @@ extension CloudStore {
     func setRecoveryDestination(_ chatID: Int64) {
         guard let account = telegram.savedMessagesChatID, !isRefreshing, upload == nil, !isCatalogSyncing else { return }
         if index.recovery == nil { index.recovery = RecoveryMetadata(accountID: account) }
+        index.recovery?.accountID = account
         index.recovery?.destinationChatID = chatID
         catalogMutation += 1
         persist()
@@ -81,7 +83,10 @@ extension CloudStore {
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                 try JSONEncoder().encode(index).write(to: folder.appendingPathComponent("Katalog-vor-Import-\(Int(Date().timeIntervalSince1970)).json"), options: [.atomic])
             }
-            index = CatalogCodec.merge(snapshot, into: index, accountID: account)
+            let merged = CatalogCodec.merge(snapshot, into: index, accountID: account)
+            try CatalogCodec.validate(CatalogSnapshot(revision: merged.revision, createdAt: Date(), folders: merged.folders,
+                files: merged.files, tags: merged.tags, recovery: merged.recovery))
+            index = merged
             index.recovery?.scannedThrough = [:]
             persist()
             refreshRecoveryAnchor()
@@ -195,6 +200,7 @@ extension CloudStore {
     private func startRecoveryScan() {
         guard let account = telegram.savedMessagesChatID else { return }
         if index.recovery == nil { index.recovery = RecoveryMetadata(accountID: account) }
+        index.recovery?.accountID = account
         let chats = Set([account] + [index.recovery?.destinationChatID].compactMap { $0 }
             + index.files.compactMap(\.telegramChatID) + (index.recovery?.partialFiles.compactMap(\.telegramChatID) ?? []))
         scanRecoveryChat(chats.sorted(), at: 0)
@@ -219,6 +225,7 @@ extension CloudStore {
             return
         }
         let chat = chats[position]
+        knownRecoveryFileIDs = Set(index.files.filter(\.isComplete).map(\.id))
         scanHighWater = index.recovery?.scannedThrough[String(chat)] ?? 0
         scannedRecoveryFiles = Dictionary((index.recovery?.partialFiles ?? []).filter { $0.telegramChatID == chat }
             .map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -245,9 +252,11 @@ extension CloudStore {
             let confirmed = messages.filter { DurableOutbox.isFinal($0) }
             let ids = confirmed.compactMap { TelegramClient.int64($0["id"]) }
             self.scanHighWater = max(self.scanHighWater, ids.max() ?? 0)
+            self.recoveryPageFiles = []
             for message in confirmed where (TelegramClient.int64(message["id"]) ?? 0) > cutoff {
                 self.recoverMediaMessage(message, chat: chat)
             }
+            if !self.recoveryPageFiles.isEmpty { self.index.files.append(contentsOf: self.recoveryPageFiles) }
             self.recoveryProgress = "Kanal wird abgeglichen: \(self.index.files.count) Dateien erkannt"
             // TDLib can return short pages. Only an empty page, an exhausted
             // boundary, or the persisted message-ID cursor ends the scan.
@@ -275,7 +284,7 @@ extension CloudStore {
               let id = manifest.fileID, index.recovery?.deletedFiles[id] == nil,
               let messageID = TelegramClient.int64(message["id"]), messageID > 0 else { return }
         // A newer local/catalog entry owns rename, move and tag metadata.
-        if index.files.contains(where: { $0.id == id && $0.isComplete }) { return }
+        if knownRecoveryFileIDs.contains(id) { return }
         let info = mediaFileInfo(fromMessage: message)
         guard info.fileID != nil else { return }
         var file = scannedRecoveryFiles[id] ?? CloudFileEntry(id: id, name: manifest.name, folderID: manifest.folderID,
@@ -294,7 +303,10 @@ extension CloudStore {
         }
         file.chunks.sort { $0.index < $1.index }
         scannedRecoveryFiles[id] = file
-        if file.isComplete { index.files.append(file) }
+        if file.isComplete {
+            knownRecoveryFileIDs.insert(id)
+            recoveryPageFiles.append(file)
+        }
     }
 
     private func recoveryFailed(_ message: String) {

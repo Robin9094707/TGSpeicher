@@ -12,8 +12,8 @@ enum TGAppearance: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .system: return "System"
-        case .light: return "Light"
-        case .dark: return "Dark"
+        case .light: return "Hell"
+        case .dark: return "Dunkel"
         }
     }
 
@@ -31,7 +31,7 @@ enum TGDriveViewMode: String, CaseIterable, Identifiable {
     case grid
 
     var id: String { rawValue }
-    var label: String { self == .list ? "List" : "Grid" }
+    var label: String { self == .list ? "Liste" : "Raster" }
     var icon: String { self == .list ? "list.bullet" : "square.grid.2x2" }
 }
 
@@ -47,12 +47,12 @@ enum TGDriveSortMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .modifiedNewest: return "Newest"
-        case .modifiedOldest: return "Oldest"
+        case .modifiedNewest: return "Neueste zuerst"
+        case .modifiedOldest: return "Älteste zuerst"
         case .nameAZ: return "Name A–Z"
         case .nameZA: return "Name Z–A"
-        case .sizeLargest: return "Largest"
-        case .sizeSmallest: return "Smallest"
+        case .sizeLargest: return "Größte zuerst"
+        case .sizeSmallest: return "Kleinste zuerst"
         }
     }
 
@@ -119,3 +119,4 @@ final class AppPreferences: ObservableObject {
         UIImpactFeedbackGenerator(style: style).impactOccurred()
     }
 }
+

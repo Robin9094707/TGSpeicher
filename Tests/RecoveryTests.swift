@@ -27,11 +27,15 @@ struct RecoveryTests {
         check(restored.files[0].chunks[0].telegramMessageID == part.telegramMessageID, "message IDs survive archive round trip")
         check(restored.folders[1].parentID == folder.id && restored.files[0].tagIDs == [tag.id], "nested folders and tags survive reinstall")
         check(restored.recovery?.destinationChatID == -100123, "channel selection survives reinstall")
+        rejects("unrelated JSON cannot replace catalog") { _ = try CatalogCodec.decode(Data("{}".utf8), accountID: 99) }
         rejects("cross-account import rejected") { _ = try CatalogCodec.decode(packed, accountID: 100) }
         var json = try JSONSerialization.jsonObject(with: packed) as! [String: Any]
         json["sha256"] = "bad"
         let tampered = try JSONSerialization.data(withJSONObject: json)
         rejects("corrupt checksum rejected") { _ = try CatalogCodec.decode(tampered, accountID: 99) }
+        var emptyPayload = json
+        emptyPayload["payload"] = ""
+        rejects("empty compressed payload rejected safely") { _ = try CatalogCodec.decode(JSONSerialization.data(withJSONObject: emptyPayload), accountID: 99) }
         json["bytes"] = CatalogCodec.maxBytes + 1
         rejects("decompression size bounded") { _ = try CatalogCodec.decode(JSONSerialization.data(withJSONObject: json), accountID: 99) }
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
@@ -54,6 +58,13 @@ struct RecoveryTests {
         let hash = CatalogCodec.digest(Data("original media".utf8))
         check(CatalogCodec.stableMediaID(hash: hash, chatID: 1) == CatalogCodec.stableMediaID(hash: hash, chatID: 1), "media identity stable across queue recreation")
         check(CatalogCodec.stableMediaID(hash: hash, chatID: 1) != CatalogCodec.stableMediaID(hash: hash, chatID: 2), "media identities scoped to destination")
+        var cycleLocal = CloudIndex(folders: [folder, nested])
+        cycleLocal.folders[0].parentID = nested.id
+        cycleLocal.folders[1].parentID = nil
+        cycleLocal.folders[0].modifiedAt = Date().addingTimeInterval(90)
+        let cycleMerged = CatalogCodec.merge(snapshot, into: cycleLocal, accountID: 99)
+        try CatalogCodec.validate(CatalogSnapshot(revision: 1, createdAt: Date(), folders: cycleMerged.folders, files: cycleMerged.files, tags: cycleMerged.tags))
+        check(true, "merge repairs cycle spanning independently valid states")
         try testOutbox()
         print("\(checks) recovery checks passed")
     }
@@ -116,5 +127,13 @@ struct RecoveryTests {
         rejected.send(payload, operation: "rejected") { _ in }
         rejected.send(payload, operation: "rejected") { _ in }
         check(attempts == 2, "explicit Telegram rejection can safely retry")
+        var uncertainAttempts = 0
+        let uncertain = DurableOutbox(root: root.appendingPathComponent("uncertain"), request: request, sendFinal: { _, reply in
+            uncertainAttempts += 1
+            reply(["@type": "error", "code": 500, "message": "timeout"])
+        })
+        uncertain.send(payload, operation: "uncertain") { _ in }
+        uncertain.send(payload, operation: "uncertain") { _ in }
+        check(uncertainAttempts == 1, "uncertain server error never starts a second send")
     }
 }

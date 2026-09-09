@@ -69,7 +69,7 @@ enum CatalogCodec {
         if let header = try JSONSerialization.jsonObject(with: data) as? [String: Any], header["format"] != nil {
             let archive = try decoder.decode(Archive.self, from: data)
             guard archive.format == "TGSpeicherCatalog", archive.version == 3,
-                  archive.codec == "lzfse", archive.bytes > 0, archive.bytes <= maxBytes else {
+                  archive.codec == "lzfse", !archive.payload.isEmpty, archive.bytes > 0, archive.bytes <= maxBytes else {
                 throw RecoveryError.invalid("Unbekanntes oder beschädigtes Katalogformat.")
             }
             var raw = Data(count: archive.bytes)
@@ -87,6 +87,10 @@ enum CatalogCodec {
         } else if let legacy = try? decoder.decode(CatalogSnapshot.self, from: data) {
             snapshot = legacy
         } else {
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  object["version"] != nil, object["files"] is [Any], object["folders"] is [Any] else {
+                throw RecoveryError.invalid("Die Datei ist kein TGSpeicher-Katalog.")
+            }
             let legacy = try JSONDecoder().decode(CloudIndex.self, from: data)
             snapshot = CatalogSnapshot(revision: legacy.revision, createdAt: legacy.lastSyncedAt ?? Date(),
                                        folders: legacy.folders, files: legacy.files, tags: legacy.tags, recovery: legacy.recovery)
@@ -152,6 +156,16 @@ enum CatalogCodec {
         var tags = Dictionary(local.tags.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for tag in snapshot.tags where tags[tag.id] == nil { tags[tag.id] = tag }
         result.tags = tags.values.filter { metadata.deletedTags[$0.id] == nil }
+        // Repair the result of concurrent edits before publishing it to SwiftUI.
+        let folderPositions = Dictionary(uniqueKeysWithValues: result.folders.enumerated().map { ($0.element.id, $0.offset) })
+        for i in result.folders.indices {
+            var seen: Set<UUID> = [result.folders[i].id]
+            var parent = result.folders[i].parentID
+            while let id = parent, let position = folderPositions[id] {
+                if !seen.insert(id).inserted { result.folders[i].parentID = nil; break }
+                parent = result.folders[position].parentID
+            }
+        }
         result.revision = max(local.revision, snapshot.revision)
         result.recovery = metadata
         repairReferences(&result)

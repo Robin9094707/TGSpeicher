@@ -6,7 +6,7 @@ final class TGNetworkMonitor: ObservableObject {
     @Published private(set) var isConnected = true
     @Published private(set) var isExpensive = false
     @Published private(set) var isConstrained = false
-    @Published private(set) var interfaceName = "Network"
+    @Published private(set) var interfaceName = "Netzwerk"
 
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "eu.simplexsmp.tgspeicher.network-monitor")
@@ -21,7 +21,7 @@ final class TGNetworkMonitor: ObservableObject {
                 if path.usesInterfaceType(.wifi) { self.interfaceName = "Wi‑Fi" }
                 else if path.usesInterfaceType(.cellular) { self.interfaceName = "Cellular" }
                 else if path.usesInterfaceType(.wiredEthernet) { self.interfaceName = "Ethernet" }
-                else { self.interfaceName = path.status == .satisfied ? "Network" : "Offline" }
+                else { self.interfaceName = path.status == .satisfied ? "Netzwerk" : "Offline" }
             }
         }
         monitor.start(queue: queue)
@@ -83,7 +83,7 @@ final class TGProxyManager: ObservableObject {
             telegram.send(["@type": "disableProxy"]) { [weak self] response in
                 guard let self else { return }
                 if response["@type"] as? String == "error" {
-                    self.lastError = response["message"] as? String ?? "Could not disable the proxy."
+                    self.lastError = response["message"] as? String ?? "Der Proxy konnte nicht deaktiviert werden."
                 } else {
                     self.activeProxyID = nil
                     self.status = "Direct connection"
@@ -94,7 +94,7 @@ final class TGProxyManager: ObservableObject {
         }
 
         guard !cleanServer.isEmpty, let port = Int(portText), (1...65535).contains(port) else {
-            lastError = "Enter a valid proxy server and port."
+            lastError = "Bitte einen gültigen Proxy-Server und Port eingeben."
             return
         }
 
@@ -131,8 +131,8 @@ final class TGProxyManager: ObservableObject {
         ]) { [weak self] response in
             guard let self else { return }
             if response["@type"] as? String == "error" {
-                self.status = "Proxy connection failed"
-                self.lastError = response["message"] as? String ?? "Telegram rejected the proxy configuration."
+                self.status = "Proxy-Verbindung fehlgeschlagen"
+                self.lastError = response["message"] as? String ?? "Telegram hat die Proxy-Einstellungen abgelehnt."
                 return
             }
             self.activeProxyID = TelegramClient.int(response["id"])
@@ -143,15 +143,15 @@ final class TGProxyManager: ObservableObject {
 
     func ping(using telegram: TelegramClient) {
         guard let id = activeProxyID else {
-            lastError = "Apply the proxy first."
+            lastError = "Bitte zuerst die Proxy-Einstellungen übernehmen."
             return
         }
-        status = "Testing proxy…"
+        status = "Proxy wird geprüft …"
         telegram.send(["@type": "pingProxy", "proxy_id": id]) { [weak self] response in
             guard let self else { return }
             if response["@type"] as? String == "error" {
-                self.status = "Proxy test failed"
-                self.lastError = response["message"] as? String ?? "Proxy test failed."
+                self.status = "Proxy-Test fehlgeschlagen"
+                self.lastError = response["message"] as? String ?? "Der Proxy-Test ist fehlgeschlagen."
             } else if let seconds = response["seconds"] as? Double {
                 self.status = String(format: "Proxy latency %.0f ms", seconds * 1000)
             } else {
@@ -170,3 +170,4 @@ final class TGProxyManager: ObservableObject {
         KeychainStore.set(secret, for: Keys.password)
     }
 }
+

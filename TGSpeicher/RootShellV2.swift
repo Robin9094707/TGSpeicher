@@ -87,7 +87,7 @@ struct V2RootView: View {
                 photoBackup.lastError = nil
             }
         } message: {
-            Text(cloud.lastError ?? queue.lastError ?? remoteImporter.lastError ?? proxy.lastError ?? photoBackup.lastError ?? "Unknown error")
+            Text(cloud.lastError ?? queue.lastError ?? remoteImporter.lastError ?? proxy.lastError ?? photoBackup.lastError ?? "Unbekannter Fehler")
         }
         .fullScreenCover(isPresented: Binding(
             get: { photoBackup.isNightMode && telegram.authorizationStage == .ready },
@@ -120,24 +120,24 @@ struct DriveShellV2: View {
             NavigationStack {
                 OptimizedDriveBrowserV2(
                     folderID: nil,
-                    title: "TG Drive",
+                    title: "Meine Dateien",
                     cloud: cloud,
                     preferences: preferences,
                     queue: queue,
                     remoteImporter: remoteImporter
                 )
             }
-            .tabItem { Label("Drive", systemImage: "externaldrive.fill.badge.icloud") }
+            .tabItem { Label("Dateien", systemImage: "externaldrive.fill.badge.icloud") }
 
             NavigationStack {
                 PhotoBackupView(manager: photoBackup, cloud: cloud, telemetry: telemetry)
             }
-            .tabItem { Label("Photos", systemImage: "photo.stack.fill") }
+            .tabItem { Label("Fotos", systemImage: "photo.stack.fill") }
 
             NavigationStack {
                 TransfersViewV2(cloud: cloud, queue: queue, remoteImporter: remoteImporter, telemetry: telemetry)
             }
-            .tabItem { Label("Transfers", systemImage: "arrow.up.arrow.down.circle.fill") }
+            .tabItem { Label("Übertragungen", systemImage: "arrow.up.arrow.down.circle.fill") }
 
             NavigationStack {
                 OverviewV2(
@@ -150,7 +150,7 @@ struct DriveShellV2: View {
                     photoBackup: photoBackup
                 )
             }
-            .tabItem { Label("Stats", systemImage: "chart.bar.xaxis") }
+            .tabItem { Label("Übersicht", systemImage: "chart.bar.xaxis") }
 
             NavigationStack {
                 SettingsV2(
@@ -163,7 +163,7 @@ struct DriveShellV2: View {
                     runtime: runtime
                 )
             }
-            .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+            .tabItem { Label("Einstellungen", systemImage: "gearshape.fill") }
         }
         .safeAreaInset(edge: .top, spacing: 0) { RecoveryStatusBanner(cloud: cloud) }
         .overlay(alignment: .bottom) {
@@ -195,8 +195,8 @@ private struct LiveCompactTransferGlass: View {
             HStack {
                 Text(telemetry.speedText)
                 Spacer()
-                if progress.partCount > 1 { Text("Part \(max(1, progress.currentPart))/\(progress.partCount)") }
-                Text("ETA \(telemetry.etaText)")
+                if progress.partCount > 1 { Text("Teil \(max(1, progress.currentPart))/\(progress.partCount)") }
+                Text("Restzeit \(telemetry.etaText)")
             }
             .font(.caption2).foregroundStyle(.secondary)
         }

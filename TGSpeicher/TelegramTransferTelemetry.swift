@@ -57,7 +57,7 @@ final class TelegramTransferTelemetry: ObservableObject {
     }
 
     var speedText: String {
-        guard bytesPerSecond > 1 else { return "Waiting for Telegram…" }
+        guard bytesPerSecond > 1 else { return "Warten auf Telegram …" }
         return Int64(bytesPerSecond).byteCountString + "/s"
     }
 
@@ -126,3 +126,4 @@ final class TelegramTransferTelemetry: ObservableObject {
         lastSampleDate = Date()
     }
 }
+

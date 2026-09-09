@@ -11,7 +11,7 @@ final class TelegramClient: ObservableObject {
     @Published private(set) var maxUploadBytes: Int64 = 2_000_000_000
     @Published private(set) var loginCodeInfo: LoginCodeInfo?
     @Published private(set) var debugLines: [String] = []
-    @Published private(set) var lastAuthorizationStateName = "Not started"
+    @Published private(set) var lastAuthorizationStateName = "Noch nicht gestartet"
     @Published private(set) var lastActivityAt: Date?
     @Published private(set) var isAuthActionInFlight = false
     @Published var lastError: String?
@@ -55,7 +55,7 @@ final class TelegramClient: ObservableObject {
     }
 
     var debugText: String { debugLines.joined(separator: "\n") }
-    var clientDescription: String { activeClientID.map { "Client \($0)" } ?? "No active client" }
+    var clientDescription: String { activeClientID.map { "Client \($0)" } ?? "Keine aktive Verbindung" }
 
     private var activeClientID: Int32? {
         clientLock.lock(); defer { clientLock.unlock() }
@@ -83,11 +83,11 @@ final class TelegramClient: ObservableObject {
     func saveAPICredentials(apiIDText: String, apiHash: String) {
         let hash = apiHash.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = Int(apiIDText.trimmingCharacters(in: .whitespacesAndNewlines)), id > 0 else {
-            lastError = "Please enter a valid Telegram API ID."
+            lastError = "Bitte eine gültige Telegram-API-ID eingeben."
             return
         }
         guard hash.count >= 16 else {
-            lastError = "Please enter the API hash from my.telegram.org."
+            lastError = "Bitte den API-Hash von my.telegram.org eingeben."
             return
         }
         KeychainStore.set(String(id), for: apiIDKey)
@@ -191,7 +191,7 @@ final class TelegramClient: ObservableObject {
         guard !clean.isEmpty else { return }
         guard case .phone = authorizationStage else {
             debug("Duplicate phone-code request blocked")
-            lastError = "A login-code transaction is already active. Use the current code instead of requesting another one."
+            lastError = "Ein Anmeldecode wurde bereits angefordert. Bitte verwende den aktuellen Code."
             return
         }
         guard !isAuthActionInFlight else { return }
@@ -225,11 +225,11 @@ final class TelegramClient: ObservableObject {
     func resendAuthenticationCode() {
         guard case .code = authorizationStage, let info = loginCodeInfo else { return }
         guard info.nextDeliveryType != nil else {
-            lastError = "Telegram did not offer another delivery method. Use the newest code from Telegram."
+            lastError = "Telegram bietet keine andere Zustellart an. Bitte verwende den neuesten Telegram-Code."
             return
         }
         guard info.canResend else {
-            lastError = "Telegram allows another code in \(info.remainingSeconds) seconds."
+            lastError = "Telegram erlaubt einen weiteren Code in \(info.remainingSeconds) Sekunden."
             return
         }
         guard !isAuthActionInFlight else { return }
@@ -248,11 +248,11 @@ final class TelegramClient: ObservableObject {
     }
 
     func submitCode(_ code: String) {
-        performAuthRequest(["@type": "checkAuthenticationCode", "code": code.trimmingCharacters(in: .whitespacesAndNewlines)], label: "verification code")
+        performAuthRequest(["@type": "checkAuthenticationCode", "code": code.trimmingCharacters(in: .whitespacesAndNewlines)], label: "Bestätigungscode")
     }
 
     func submitPassword(_ password: String) {
-        performAuthRequest(["@type": "checkAuthenticationPassword", "password": password], label: "2FA password")
+        performAuthRequest(["@type": "checkAuthenticationPassword", "password": password], label: "2FA-Passwort")
     }
 
     func submitEmailAddress(_ email: String) {
@@ -263,7 +263,7 @@ final class TelegramClient: ObservableObject {
         performAuthRequest([
             "@type": "checkAuthenticationEmailCode",
             "code": ["@type": "emailAddressAuthenticationCode", "code": code.trimmingCharacters(in: .whitespacesAndNewlines)]
-        ], label: "email code")
+        ], label: "E-Mail-Code")
     }
 
     private func performAuthRequest(_ request: [String: Any], label: String) {
@@ -288,7 +288,7 @@ final class TelegramClient: ObservableObject {
 
     func send(_ request: [String: Any], completion: (([String: Any]) -> Void)? = nil) {
         guard let id = activeClientID else {
-            DispatchQueue.main.async { self.lastError = "Telegram is not connected yet." }
+            DispatchQueue.main.async { self.lastError = "Telegram ist noch nicht verbunden." }
             return
         }
 
@@ -317,7 +317,7 @@ final class TelegramClient: ObservableObject {
             guard let self else { return }
             if message["@type"] as? String == "error" { completion(message); return }
             guard let temporaryID = Self.int64(message["id"]) else {
-                completion(["@type": "error", "message": "Telegram returned no message ID."])
+                completion(["@type": "error", "message": "Telegram hat keine Nachrichten-ID zurückgegeben."])
                 return
             }
             if message["sending_state"] == nil || message["sending_state"] is NSNull {
@@ -400,7 +400,7 @@ final class TelegramClient: ObservableObject {
                 if isChannel && canPost {
                     next.append(TelegramBackupDestination(
                         id: chatID,
-                        title: chat["title"] as? String ?? "Telegram Channel",
+                        title: chat["title"] as? String ?? "Telegram-Kanal",
                         isSavedMessages: false
                     ))
                 }
@@ -486,7 +486,7 @@ final class TelegramClient: ObservableObject {
 
         case "updateMessageSendFailed":
             if let oldID = Self.int64(response["old_message_id"]) {
-                let error = response["error"] as? [String: Any] ?? ["@type": "error", "message": "Telegram failed to send the message."]
+                let error = response["error"] as? [String: Any] ?? ["@type": "error", "message": "Telegram konnte die Nachricht nicht senden."]
                 resolveFinalMessage(oldID: oldID, result: error)
             }
 
@@ -541,7 +541,7 @@ final class TelegramClient: ObservableObject {
             DispatchQueue.main.async {
                 self.loginCodeInfo = info
                 self.lastError = nil
-                self.authorizationStage = .code(hint: info?.deliveryDescription ?? "Enter the code Telegram sent to you.")
+                self.authorizationStage = .code(hint: info?.deliveryDescription ?? "Gib den von Telegram gesendeten Code ein.")
             }
 
         case "authorizationStateWaitOtherDeviceConfirmation":
@@ -553,7 +553,7 @@ final class TelegramClient: ObservableObject {
 
         case "authorizationStateWaitEmailCode":
             let info = state["code_info"] as? [String: Any]
-            let pattern = info?["email_address_pattern"] as? String ?? "your email"
+            let pattern = info?["email_address_pattern"] as? String ?? "deine E-Mail-Adresse"
             DispatchQueue.main.async { self.authorizationStage = .emailCode(pattern: pattern) }
 
         case "authorizationStateWaitPassword":
@@ -598,16 +598,16 @@ final class TelegramClient: ObservableObject {
     }
 
     private static func describeCodeType(_ type: String) -> String {
-        if type.contains("TelegramMessage") { return "Telegram sent the code to the verified Telegram service chat in an already signed-in Telegram app." }
-        if type.contains("SmsPhrase") { return "Telegram sent an SMS phrase." }
-        if type.contains("SmsWord") { return "Telegram sent an SMS word." }
-        if type.contains("Sms") { return "Telegram sent the code by SMS." }
-        if type.contains("MissedCall") { return "Telegram selected missed-call verification." }
-        if type.contains("FlashCall") { return "Telegram selected flash-call verification." }
-        if type.contains("Call") { return "Telegram will provide the code by phone call." }
-        if type.contains("Fragment") { return "Telegram sent the code through Fragment." }
-        if type.contains("Firebase") { return "Telegram is performing device verification before code delivery." }
-        return "Telegram selected a code delivery method for this account."
+        if type.contains("TelegramMessage") { return "Telegram hat den Code an den verifizierten Telegram-Servicechat in einer bereits angemeldeten App gesendet." }
+        if type.contains("SmsPhrase") { return "Telegram hat eine Bestätigungsphrase per SMS gesendet." }
+        if type.contains("SmsWord") { return "Telegram hat ein Bestätigungswort per SMS gesendet." }
+        if type.contains("Sms") { return "Telegram hat den Code per SMS gesendet." }
+        if type.contains("MissedCall") { return "Telegram verwendet einen verpassten Anruf zur Bestätigung." }
+        if type.contains("FlashCall") { return "Telegram verwendet einen kurzen Anruf zur Bestätigung." }
+        if type.contains("Call") { return "Telegram übermittelt den Code per Anruf." }
+        if type.contains("Fragment") { return "Telegram hat den Code über Fragment gesendet." }
+        if type.contains("Firebase") { return "Telegram prüft das Gerät vor dem Versand des Codes." }
+        return "Telegram hat die Zustellart für dieses Konto ausgewählt."
     }
 
     private func configureTDLib() {
@@ -619,7 +619,7 @@ final class TelegramClient: ObservableObject {
 
         let fm = FileManager.default
         guard let support = try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
-            DispatchQueue.main.async { self.lastError = "TGSpeicher cannot open Application Support." }
+            DispatchQueue.main.async { self.lastError = "TGSpeicher kann seinen lokalen App-Speicher nicht öffnen." }
             return
         }
         let root = support.appendingPathComponent("TGSpeicher-TDLib", isDirectory: true)
@@ -646,7 +646,7 @@ final class TelegramClient: ObservableObject {
             "use_secret_chats": false,
             "api_id": apiID,
             "api_hash": apiHash,
-            "system_language_code": Locale.current.language.languageCode?.identifier ?? "en",
+            "system_language_code": "de",
             "device_model": UIDevice.current.model,
             "system_version": UIDevice.current.systemVersion,
             "application_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1"
@@ -676,7 +676,7 @@ final class TelegramClient: ObservableObject {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard let self, self.activeClientID == id, self.startGeneration == generation, self.authorizationStage == .connecting else { return }
-            self.lastError = "Telegram is still initializing. Open Debug to retry or erase the local session."
+            self.lastError = "Telegram wird noch gestartet. In der Diagnose kannst du die Verbindung erneut starten oder die lokale Sitzung zurücksetzen."
         }
     }
 

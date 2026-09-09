@@ -80,7 +80,7 @@ struct LoginView: View {
                     case .emailAddress: emailAddressCard
                     case .emailCode(let pattern): emailCodeCard(pattern: pattern)
                     case .closed:
-                        recoveryCard(title: "Session closed", message: "Telegram closed the local session. Retry without deleting your cloud files.")
+                        recoveryCard(title: "Session closed", message: "Telegram hat die lokale Sitzung geschlossen. Verbinde dich erneut; deine Dateien bleiben in Telegram erhalten.")
                     case .error(let text):
                         recoveryCard(title: "Telegram needs attention", message: text)
                     case .ready: EmptyView()
@@ -88,7 +88,7 @@ struct LoginView: View {
                 }
                 .frame(maxWidth: 560)
 
-                Label("No TGSpeicher backend • Telegram runs directly on this iPhone", systemImage: "iphone.and.arrow.forward")
+                Label("Direkt mit deinem Telegram-Konto verbunden", systemImage: "iphone.and.arrow.forward")
                     .font(.footnote)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -114,7 +114,7 @@ struct LoginView: View {
             VStack(spacing: 5) {
                 Text("TGSpeicher")
                     .font(.system(size: 38, weight: .bold, design: .rounded))
-                Text("Your private Telegram cloud drive")
+                Text("Dein privater Telegram-Dateispeicher")
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
@@ -123,8 +123,8 @@ struct LoginView: View {
 
     private var credentialsCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Telegram API access", systemImage: "key.fill").font(.headline)
-            Text("Use the API ID and API hash from my.telegram.org. They stay in the iPhone Keychain.")
+            Label("Telegram-API-Zugang", systemImage: "key.fill").font(.headline)
+            Text("Verwende die API-ID und den API-Hash von my.telegram.org. Sie werden im Schlüsselbund deines iPhones gespeichert.")
                 .font(.subheadline).foregroundStyle(.secondary)
             TextField("API ID", text: $apiID)
                 .keyboardType(.numberPad)
@@ -133,7 +133,7 @@ struct LoginView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
-            primaryButton("Save & Connect", icon: "lock.open.fill") {
+            primaryButton("Speichern & Verbinden", icon: "lock.open.fill") {
                 telegram.saveAPICredentials(apiIDText: apiID, apiHash: apiHash)
             }
         }
@@ -143,11 +143,11 @@ struct LoginView: View {
     private var connectingCard: some View {
         VStack(spacing: 15) {
             ProgressView().controlSize(.large)
-            Text("Connecting securely").font(.headline)
-            Text("TDLib is opening the encrypted on-device Telegram session.")
+            Text("Sichere Verbindung wird hergestellt").font(.headline)
+            Text("Deine verschlüsselte Telegram-Sitzung wird geöffnet.")
                 .font(.subheadline).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Retry connection", systemImage: "arrow.clockwise") { telegram.retryConnection() }
+            Button("Verbindung erneut versuchen", systemImage: "arrow.clockwise") { telegram.retryConnection() }
                 .buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity)
@@ -156,19 +156,19 @@ struct LoginView: View {
 
     private var phoneCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Connect Telegram", systemImage: "phone.fill").font(.headline)
-            Text("TGSpeicher blocks duplicate code requests so repeated taps cannot invalidate the current login transaction.")
+            Label("Telegram verbinden", systemImage: "phone.fill").font(.headline)
+            Text("Fordere einen Anmeldecode an oder melde dich mit einem QR-Code an.")
                 .font(.subheadline).foregroundStyle(.secondary)
             TextField("+49…", text: $phone)
                 .keyboardType(.phonePad)
                 .textContentType(.telephoneNumber)
                 .textFieldStyle(.roundedBorder)
-            primaryButton(telegram.isAuthActionInFlight ? "Requesting…" : "Send Login Code", icon: "paperplane.fill") {
+            primaryButton(telegram.isAuthActionInFlight ? "Wird angefordert …" : "Anmeldecode senden", icon: "paperplane.fill") {
                 telegram.setPhoneNumber(phone)
             }
             .disabled(telegram.isAuthActionInFlight)
             Divider()
-            Button("Login with QR instead", systemImage: "qrcode") { telegram.requestQRLogin() }
+            Button("Mit QR-Code anmelden", systemImage: "qrcode") { telegram.requestQRLogin() }
                 .buttonStyle(.bordered)
                 .frame(maxWidth: .infinity)
                 .disabled(telegram.isAuthActionInFlight)
@@ -178,13 +178,13 @@ struct LoginView: View {
 
     private func codeCard(hint: String) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Verification code", systemImage: "number.square.fill").font(.headline)
+            Label("Bestätigungscode", systemImage: "number.square.fill").font(.headline)
             Text(hint).font(.subheadline).foregroundStyle(.secondary)
             if let info = telegram.loginCodeInfo {
                 HStack(spacing: 10) {
                     Image(systemName: "info.circle.fill").foregroundStyle(.blue)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Telegram-selected delivery").font(.caption).foregroundStyle(.secondary)
+                        Text("Von Telegram gewählte Zustellung").font(.caption).foregroundStyle(.secondary)
                         Text(shortDelivery(info.deliveryType)).font(.subheadline.weight(.semibold))
                     }
                 }
@@ -195,7 +195,7 @@ struct LoginView: View {
                 .keyboardType(.numberPad)
                 .textContentType(.oneTimeCode)
                 .textFieldStyle(.roundedBorder)
-            primaryButton("Verify", icon: "checkmark.circle.fill") { telegram.submitCode(code) }
+            primaryButton("Bestätigen", icon: "checkmark.circle.fill") { telegram.submitCode(code) }
                 .disabled(telegram.isAuthActionInFlight || code.isEmpty)
             if let info = telegram.loginCodeInfo, info.nextDeliveryType != nil {
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
@@ -214,7 +214,7 @@ struct LoginView: View {
                     .disabled(info.remainingSeconds > 0 || telegram.isAuthActionInFlight)
                 }
             }
-            Button("Use QR login", systemImage: "qrcode") { telegram.requestQRLogin() }
+            Button("QR-Anmeldung verwenden", systemImage: "qrcode") { telegram.requestQRLogin() }
                 .buttonStyle(.plain).foregroundStyle(.blue)
         }
         .tgGlassCard()
@@ -222,24 +222,24 @@ struct LoginView: View {
 
     private func qrCard(link: String) -> some View {
         VStack(spacing: 16) {
-            Label("QR login", systemImage: "qrcode.viewfinder")
+            Label("QR-Anmeldung", systemImage: "qrcode.viewfinder")
                 .font(.headline)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text("Open Telegram on a device where you are already signed in, then scan this from Settings › Devices › Link Desktop Device.")
+            Text("Öffne Telegram auf einem angemeldeten Gerät. Scanne diesen Code unter Einstellungen › Geräte › Desktop-Gerät verknüpfen.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             QRCodeView(text: link)
                 .frame(width: 220, height: 220)
                 .padding(16)
                 .background(.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             HStack {
-                Button("Copy link", systemImage: "doc.on.doc") { UIPasteboard.general.string = link }
+                Button("Link kopieren", systemImage: "doc.on.doc") { UIPasteboard.general.string = link }
                     .buttonStyle(.bordered)
-                Button("Open Telegram", systemImage: "paperplane.fill") {
+                Button("Telegram öffnen", systemImage: "paperplane.fill") {
                     if let url = URL(string: link) { UIApplication.shared.open(url) }
                 }
                 .buttonStyle(.borderedProminent)
             }
-            Button("Back to phone login", systemImage: "phone") { telegram.retryConnection() }
+            Button("Zurück zur Anmeldung per Telefonnummer", systemImage: "phone") { telegram.retryConnection() }
                 .buttonStyle(.plain).foregroundStyle(.blue)
         }
         .tgGlassCard()
@@ -247,13 +247,13 @@ struct LoginView: View {
 
     private func passwordCard(hint: String) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Two-step verification", systemImage: "lock.shield.fill").font(.headline)
-            Text(hint.isEmpty ? "Enter your Telegram 2FA password." : "Password hint: \(hint)")
+            Label("Zweistufige Bestätigung", systemImage: "lock.shield.fill").font(.headline)
+            Text(hint.isEmpty ? "Gib dein Telegram-Passwort für die zweistufige Bestätigung ein." : "Password hint: \(hint)")
                 .font(.subheadline).foregroundStyle(.secondary)
-            SecureField("Telegram password", text: $password)
+            SecureField("Telegram-Passwort", text: $password)
                 .textContentType(.password)
                 .textFieldStyle(.roundedBorder)
-            primaryButton("Unlock Telegram", icon: "lock.open.fill") { telegram.submitPassword(password) }
+            primaryButton("Telegram entsperren", icon: "lock.open.fill") { telegram.submitPassword(password) }
                 .disabled(password.isEmpty || telegram.isAuthActionInFlight)
         }
         .tgGlassCard()
@@ -261,13 +261,13 @@ struct LoginView: View {
 
     private var emailAddressCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Email verification", systemImage: "envelope.fill").font(.headline)
+            Label("E-Mail-Bestätigung", systemImage: "envelope.fill").font(.headline)
             TextField("Email address", text: $email)
                 .keyboardType(.emailAddress)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
-            primaryButton("Send Email Code", icon: "paperplane.fill") { telegram.submitEmailAddress(email) }
+            primaryButton("E-Mail-Code senden", icon: "paperplane.fill") { telegram.submitEmailAddress(email) }
                 .disabled(!email.contains("@") || telegram.isAuthActionInFlight)
         }
         .tgGlassCard()
@@ -275,14 +275,14 @@ struct LoginView: View {
 
     private func emailCodeCard(pattern: String) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Email code", systemImage: "envelope.badge.fill").font(.headline)
-            Text("Enter the code Telegram sent to \(pattern).")
+            Label("E-Mail-Code", systemImage: "envelope.badge.fill").font(.headline)
+            Text("Gib den Code ein, den Telegram an \(pattern) gesendet hat.")
                 .font(.subheadline).foregroundStyle(.secondary)
-            TextField("Email code", text: $emailCode)
+            TextField("E-Mail-Code", text: $emailCode)
                 .keyboardType(.numberPad)
                 .textContentType(.oneTimeCode)
                 .textFieldStyle(.roundedBorder)
-            primaryButton("Verify Email", icon: "checkmark.circle.fill") { telegram.submitEmailCode(emailCode) }
+            primaryButton("E-Mail bestätigen", icon: "checkmark.circle.fill") { telegram.submitEmailCode(emailCode) }
                 .disabled(emailCode.isEmpty || telegram.isAuthActionInFlight)
         }
         .tgGlassCard()
@@ -294,7 +294,7 @@ struct LoginView: View {
                 .font(.largeTitle).foregroundStyle(.orange)
             Text(title).font(.headline)
             Text(message).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button("Retry", systemImage: "arrow.clockwise") { telegram.retryConnection() }
+            Button("Erneut versuchen", systemImage: "arrow.clockwise") { telegram.retryConnection() }
                 .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity)
@@ -310,10 +310,10 @@ struct LoginView: View {
     }
 
     private func shortDelivery(_ value: String) -> String {
-        if value.contains("Telegram") { return "Telegram app" }
+        if value.contains("Telegram") { return "Telegram-App" }
         if value.localizedCaseInsensitiveContains("sms") { return "SMS" }
-        if value.localizedCaseInsensitiveContains("call") { return "Phone call" }
-        if value.localizedCaseInsensitiveContains("email") { return "Email" }
+        if value.localizedCaseInsensitiveContains("call") { return "Telefonanruf" }
+        if value.localizedCaseInsensitiveContains("email") { return "E-Mail" }
         return value.replacingOccurrences(of: "authenticationCodeType", with: "")
     }
 }
@@ -348,14 +348,14 @@ struct MainCloudView: View {
 
     var body: some View {
         TabView {
-            NavigationStack { FolderView(folderID: nil, title: "TG Cloud", cloud: cloud) }
+            NavigationStack { FolderView(folderID: nil, title: "Meine Dateien", cloud: cloud) }
                 .tabItem { Label("Cloud", systemImage: "externaldrive.fill.badge.icloud") }
             NavigationStack { TagsView(cloud: cloud) }
                 .tabItem { Label("Tags", systemImage: "tag.fill") }
             NavigationStack { DashboardView(telegram: telegram, cloud: cloud) }
-                .tabItem { Label("Overview", systemImage: "chart.bar.xaxis") }
+                .tabItem { Label("Übersicht", systemImage: "chart.bar.xaxis") }
             NavigationStack { SettingsView(telegram: telegram, cloud: cloud) }
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tabItem { Label("Einstellungen", systemImage: "gearshape.fill") }
         }
         .overlay(alignment: .bottom) {
             if let upload = cloud.upload {
@@ -392,8 +392,8 @@ struct FolderView: View {
             if folderID == nil {
                 Section {
                     HStack(spacing: 14) {
-                        stat("Files", "\(cloud.index.files.count)", "doc.fill")
-                        stat("Folders", "\(cloud.index.folders.count)", "folder.fill")
+                        stat("Dateien", "\(cloud.index.files.count)", "doc.fill")
+                        stat("Ordner", "\(cloud.index.folders.count)", "folder.fill")
                         stat("Cloud", cloud.totalTrackedBytes.byteCountString, "externaldrive.fill")
                     }
                     .padding(.vertical, 7)
@@ -405,8 +405,8 @@ struct FolderView: View {
                     } label: {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Choose File")
-                                Text("Native iOS document picker • copied locally before upload")
+                                Text("Datei auswählen")
+                                Text("Datei aus der Dateien-App auswählen")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         } icon: {
@@ -434,7 +434,7 @@ struct FolderView: View {
             if searchText.isEmpty {
                 let folders = cloud.children(of: folderID)
                 if !folders.isEmpty {
-                    Section("Folders") {
+                    Section("Ordner") {
                         ForEach(folders) { folder in
                             NavigationLink {
                                 FolderView(folderID: folder.id, title: folder.name, cloud: cloud)
@@ -442,7 +442,7 @@ struct FolderView: View {
                                 Label {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(folder.name)
-                                        Text("\(cloud.children(of: folder.id).count) folders • \(cloud.files(in: folder.id).count) files")
+                                        Text("\(cloud.children(of: folder.id).count) Ordner • \(cloud.files(in: folder.id).count) Dateien")
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                 } icon: {
@@ -454,13 +454,13 @@ struct FolderView: View {
                 }
             }
 
-            Section(searchText.isEmpty ? "Files" : "Search results") {
+            Section(searchText.isEmpty ? "Dateien" : "Search results") {
                 let files = searchText.isEmpty ? cloud.files(in: folderID) : cloud.searchFiles(searchText)
                 if files.isEmpty {
                     ContentUnavailableView(
-                        searchText.isEmpty ? "No files" : "No matches",
+                        searchText.isEmpty ? "Keine Dateien" : "Keine Treffer",
                         systemImage: searchText.isEmpty ? "tray" : "magnifyingglass",
-                        description: Text(searchText.isEmpty ? "Choose a file above or put one into TGSpeicher's Upload Inbox in the Files app." : "Try another file name or tag.")
+                        description: Text(searchText.isEmpty ? "Wähle eine Datei aus oder lege sie im Ordner „Upload Inbox“ in der Dateien-App ab." : "Versuche einen anderen Dateinamen oder Tag.")
                     )
                 } else {
                     ForEach(files) { file in
@@ -474,7 +474,7 @@ struct FolderView: View {
             }
 
             if folderID == nil && !cloud.localInboxFiles.isEmpty {
-                Section("Apple Files • Upload Inbox") {
+                Section("Dateien-App • Datei-Eingang") {
                     ForEach(cloud.localInboxFiles, id: \.self) { url in
                         Button {
                             cloud.uploadFile(url, folderID: nil)
@@ -483,7 +483,7 @@ struct FolderView: View {
                                 Image(systemName: "doc.badge.arrow.up").foregroundStyle(.blue)
                                 VStack(alignment: .leading) {
                                     Text(url.lastPathComponent).foregroundStyle(.primary)
-                                    Text("Upload from On My iPhone › TGSpeicher › Upload Inbox")
+                                    Text("Aus „Auf meinem iPhone › TGSpeicher › Upload Inbox“ hochladen")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                             }
@@ -494,7 +494,7 @@ struct FolderView: View {
             }
         }
         .navigationTitle(title)
-        .searchable(text: $searchText, prompt: "Search files or tags")
+        .searchable(text: $searchText, prompt: "Dateien oder Tags suchen")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { cloud.bootstrapFromTelegram() } label: {
@@ -502,9 +502,9 @@ struct FolderView: View {
                 }
                 .disabled(cloud.isRefreshing)
                 Menu {
-                    Button("Choose File", systemImage: "arrow.up.doc") { showingPicker = true }
-                    Button("New Folder", systemImage: "folder.badge.plus") { newFolderSheet = true }
-                    Button("Refresh Files Inbox", systemImage: "folder") { cloud.refreshLocalInbox() }
+                    Button("Datei auswählen", systemImage: "arrow.up.doc") { showingPicker = true }
+                    Button("Neuer Ordner", systemImage: "folder.badge.plus") { newFolderSheet = true }
+                    Button("Datei-Eingang aktualisieren", systemImage: "folder") { cloud.refreshLocalInbox() }
                 } label: {
                     Image(systemName: "plus.circle.fill")
                 }
@@ -517,7 +517,7 @@ struct FolderView: View {
                     if let url = urls.first {
                         cloud.importPickedFileAndUpload(url, folderID: folderID)
                     } else {
-                        cloud.lastError = "The Files app returned no selected file."
+                        cloud.lastError = "Die Dateien-App hat keine ausgewählte Datei zurückgegeben."
                     }
                 },
                 onCancel: {
@@ -528,12 +528,12 @@ struct FolderView: View {
         }
         .sheet(isPresented: $newFolderSheet) {
             NavigationStack {
-                Form { TextField("Folder name", text: $folderName) }
-                    .navigationTitle("New Folder")
+                Form { TextField("Ordnername", text: $folderName) }
+                    .navigationTitle("Neuer Ordner")
                     .toolbar {
-                        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { newFolderSheet = false } }
+                        ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { newFolderSheet = false } }
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("Create") {
+                            Button("Erstellen") {
                                 cloud.createFolder(name: folderName, parentID: folderID)
                                 folderName = ""
                                 newFolderSheet = false
@@ -572,7 +572,7 @@ struct FileRow: View {
                 Text(file.name).lineLimit(1)
                 HStack(spacing: 5) {
                     Text(file.totalSize.byteCountString)
-                    if file.chunks.count > 1 { Text("• \(file.chunks.count) parts") }
+                    if file.chunks.count > 1 { Text("• \(file.chunks.count) Teile") }
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 let names = cloud.tags.filter { file.tagIDs.contains($0.id) }.map(\.name)
@@ -604,13 +604,13 @@ struct FileDetailView: View {
                             Text(file.totalSize.byteCountString).foregroundStyle(.secondary)
                         }
                     }
-                    Button("Download & Verify", systemImage: "arrow.down.doc.fill") { cloud.downloadAndReassemble(file) }
+                    Button("Herunterladen & Prüfen", systemImage: "arrow.down.doc.fill") { cloud.downloadAndReassemble(file) }
                         .disabled(cloud.isDownloading)
                 }
 
                 Section("Tags") {
                     if cloud.tags.isEmpty {
-                        Text("Create tags in the Tags tab.").foregroundStyle(.secondary)
+                        Text("Erstelle Tags in der Tag-Verwaltung.").foregroundStyle(.secondary)
                     } else {
                         ForEach(cloud.tags) { tag in
                             Button {
@@ -628,12 +628,12 @@ struct FileDetailView: View {
                     }
                 }
 
-                Section("Folder") {
-                    Picker("Location", selection: Binding(
+                Section("Ordner") {
+                    Picker("Speicherort", selection: Binding(
                         get: { file.folderID },
                         set: { cloud.moveFile(file, to: $0) }
                     )) {
-                        Text("TG Cloud").tag(UUID?.none)
+                        Text("Meine Dateien").tag(UUID?.none)
                         ForEach(cloud.index.folders.sorted { $0.name < $1.name }) { folder in
                             Text(cloud.folderPath(for: folder.id).map(\.name).joined(separator: " / "))
                                 .tag(Optional(folder.id))
@@ -641,17 +641,17 @@ struct FileDetailView: View {
                     }
                 }
 
-                Section("Rename") {
+                Section("Umbenennen") {
                     TextField(file.name, text: $rename)
-                    Button("Rename") {
+                    Button("Umbenennen") {
                         cloud.renameFile(file, to: rename)
                         rename = ""
                     }
                     .disabled(rename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
-                Section("Integrity") {
-                    LabeledContent("Chunks", value: "\(file.chunks.count)")
+                Section("Integrität") {
+                    LabeledContent("Dateiteile", value: "\(file.chunks.count)")
                     if let hash = file.sha256 {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("SHA-256").font(.caption).foregroundStyle(.secondary)
@@ -661,18 +661,18 @@ struct FileDetailView: View {
                 }
 
                 Section {
-                    Button("Delete from Telegram", systemImage: "trash.fill", role: .destructive) { confirmDelete = true }
+                    Button("Aus Telegram löschen", systemImage: "trash.fill", role: .destructive) { confirmDelete = true }
                 }
             } else {
-                ContentUnavailableView("File not found", systemImage: "doc.questionmark")
+                ContentUnavailableView("Datei nicht gefunden", systemImage: "doc.questionmark")
             }
         }
-        .navigationTitle("File")
-        .confirmationDialog("Delete this file from Telegram Saved Messages?", isPresented: $confirmDelete, titleVisibility: .visible) {
+        .navigationTitle("Datei")
+        .confirmationDialog("Diese Datei dauerhaft aus Telegram löschen?", isPresented: $confirmDelete, titleVisibility: .visible) {
             if let file {
-                Button("Delete from Telegram", role: .destructive) { cloud.deleteFileFromTelegram(file) }
+                Button("Aus Telegram löschen", role: .destructive) { cloud.deleteFileFromTelegram(file) }
             }
-            Button("Cancel", role: .cancel) { }
+            Button("Abbrechen", role: .cancel) { }
         }
     }
 }
@@ -687,8 +687,8 @@ struct TagsView: View {
         List {
             Section {
                 HStack {
-                    TextField("New tag", text: $newTag)
-                    Button("Add") {
+                    TextField("Neuer Tag", text: $newTag)
+                    Button("Hinzufügen") {
                         cloud.createTag(name: newTag)
                         newTag = ""
                     }
@@ -697,7 +697,7 @@ struct TagsView: View {
             }
             Section("Tags") {
                 if cloud.tags.isEmpty {
-                    ContentUnavailableView("No tags", systemImage: "tag", description: Text("Tags are stored in the Telegram catalog and survive reinstallations."))
+                    ContentUnavailableView("Keine Tags", systemImage: "tag", description: Text("Tags werden im Telegram-Katalog gesichert und bei einer Wiederherstellung übernommen."))
                 } else {
                     ForEach(cloud.tags) { tag in
                         NavigationLink {
@@ -714,7 +714,7 @@ struct TagsView: View {
                             }
                         }
                         .swipeActions {
-                            Button(role: .destructive) { cloud.deleteTag(tag) } label: { Label("Delete", systemImage: "trash") }
+                            Button(role: .destructive) { cloud.deleteTag(tag) } label: { Label("Löschen", systemImage: "trash") }
                         }
                     }
                 }
@@ -751,7 +751,7 @@ struct DashboardView: View {
             VStack(spacing: 16) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Connected as").font(.caption).foregroundStyle(.secondary)
+                        Text("Angemeldet als").font(.caption).foregroundStyle(.secondary)
                         Text(telegram.accountName).font(.title2.bold())
                     }
                     Spacer()
@@ -761,19 +761,19 @@ struct DashboardView: View {
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                     MetricCard(title: "Tracked cloud", value: cloud.totalTrackedBytes.byteCountString, icon: "externaldrive.fill")
-                    MetricCard(title: "Files", value: "\(cloud.index.files.count)", icon: "doc.fill")
-                    MetricCard(title: "Folders", value: "\(cloud.index.folders.count)", icon: "folder.fill")
+                    MetricCard(title: "Dateien", value: "\(cloud.index.files.count)", icon: "doc.fill")
+                    MetricCard(title: "Ordner", value: "\(cloud.index.folders.count)", icon: "folder.fill")
                     MetricCard(title: "Tags", value: "\(cloud.index.tags.count)", icon: "tag.fill")
-                    MetricCard(title: "Chunks", value: "\(cloud.totalChunks)", icon: "square.stack.3d.up.fill")
+                    MetricCard(title: "Dateiteile", value: "\(cloud.totalChunks)", icon: "square.stack.3d.up.fill")
                     MetricCard(title: "Catalog", value: "r\(cloud.index.revision)", icon: "list.bullet.rectangle.fill")
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Label("Recovery catalog", systemImage: "arrow.trianglehead.2.clockwise.rotate.90.icloud.fill")
+                    Label("Wiederherstellungskatalog", systemImage: "arrow.trianglehead.2.clockwise.rotate.90.icloud.fill")
                         .font(.headline)
                     Text(cloud.catalogStatus).foregroundStyle(.secondary)
                     if let pointer = cloud.catalogPointerMessageID {
-                        Text("Pointer message ID: \(pointer)")
+                        Text("Verweis-Nachrichten-ID: \(pointer)")
                             .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     }
                 }
@@ -781,17 +781,17 @@ struct DashboardView: View {
                 .tgGlassCard()
 
                 if cloud.isDownloading {
-                    HStack { ProgressView(); Text("Downloading and verifying…"); Spacer() }.tgGlassCard()
+                    HStack { ProgressView(); Text("Wird geladen und geprüft …"); Spacer() }.tgGlassCard()
                 }
 
                 if let url = cloud.lastExportURL {
                     VStack(alignment: .leading, spacing: 12) {
-                        Label("Download ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.headline)
+                        Label("Download bereit", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.headline)
                         Text(url.lastPathComponent)
-                        Text("Saved in On My iPhone › TGSpeicher › Downloads")
+                        Text("Unter „Auf meinem iPhone › TGSpeicher › Downloads“ gespeichert")
                             .font(.caption).foregroundStyle(.secondary)
                         ShareLink(item: url) {
-                            Label("Export / Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                            Label("Exportieren / Teilen", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
                     }
@@ -800,7 +800,7 @@ struct DashboardView: View {
             }
             .padding()
         }
-        .navigationTitle("Overview")
+        .navigationTitle("Übersicht")
     }
 }
 
@@ -829,59 +829,59 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Telegram") {
-                LabeledContent("Account", value: telegram.accountName)
-                LabeledContent("Authorization", value: telegram.lastAuthorizationStateName)
-                Button("Log out from Telegram", systemImage: "rectangle.portrait.and.arrow.right") { telegram.logOut() }
+                LabeledContent("Konto", value: telegram.accountName)
+                LabeledContent("Anmeldung", value: telegram.lastAuthorizationStateName)
+                Button("Von Telegram abmelden", systemImage: "rectangle.portrait.and.arrow.right") { telegram.logOut() }
             }
 
-            Section("Recovery Catalog") {
-                Text("A pointer message plus a versioned JSON catalog restores folders, tags and final Telegram message IDs without scanning the whole chat.")
+            Section("Wiederherstellungskatalog") {
+                Text("Versionierte Katalogsicherungen stellen Ordner, Tags und Telegram-Nachrichten-IDs wieder her. Neuere Nachrichten werden anschließend abgeglichen.")
                     .font(.footnote).foregroundStyle(.secondary)
                 LabeledContent("Status", value: cloud.catalogStatus)
                 LabeledContent("Revision", value: "\(cloud.index.revision)")
                 if let pointer = cloud.catalogPointerMessageID {
-                    Text("Pointer ID: \(pointer)")
+                    Text("Verweis-ID: \(pointer)")
                         .font(.system(.body, design: .monospaced)).textSelection(.enabled)
                 }
-                Button("Sync catalog now", systemImage: "arrow.up.doc.on.clipboard") { cloud.syncCatalogNow() }
+                Button("Katalog jetzt sichern", systemImage: "arrow.up.doc.on.clipboard") { cloud.syncCatalogNow() }
                     .disabled(cloud.isCatalogSyncing)
-                Button("Fast restore / refresh", systemImage: "bolt.fill") { cloud.bootstrapFromTelegram() }
+                Button("Katalog aktualisieren", systemImage: "bolt.fill") { cloud.bootstrapFromTelegram() }
                     .disabled(cloud.isRefreshing)
-                Button("Full recovery scan", systemImage: "magnifyingglass") { cloud.fullRebuildFromTelegram() }
+                Button("Vollständige Wiederherstellung", systemImage: "magnifyingglass") { cloud.fullRebuildFromTelegram() }
                     .disabled(cloud.isRefreshing)
             }
 
-            Section("Manual disaster recovery") {
-                TextField("Catalog pointer message ID", text: $recoveryMessageID)
+            Section("Manuelle Wiederherstellung") {
+                TextField("Katalogverweis-Nachrichten-ID", text: $recoveryMessageID)
                     .keyboardType(.numberPad)
-                Button("Restore from this message ID", systemImage: "arrow.down.doc") {
+                Button("Aus dieser Nachrichten-ID wiederherstellen", systemImage: "arrow.down.doc") {
                     cloud.restoreFromCatalogPointer(recoveryMessageID)
                 }
                 .disabled(recoveryMessageID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            Section("Apple Files") {
-                Label("On My iPhone › TGSpeicher › Upload Inbox", systemImage: "folder.badge.plus")
-                Label("On My iPhone › TGSpeicher › Downloads", systemImage: "folder.fill")
-                Label("On My iPhone › TGSpeicher › Catalog Backups", systemImage: "doc.badge.clock")
-                Text("Files picked inside TGSpeicher are copied into Upload Inbox first. This keeps uploads independent from temporary iCloud or third-party File Provider URLs.")
+            Section("Dateien-App") {
+                Label("Auf meinem iPhone › TGSpeicher › Upload Inbox", systemImage: "folder.badge.plus")
+                Label("Auf meinem iPhone › TGSpeicher › Downloads", systemImage: "folder.fill")
+                Label("Auf meinem iPhone › TGSpeicher › Catalog Backups", systemImage: "doc.badge.clock")
+                Text("Ausgewählte Dateien werden vor dem Upload lokal bereitgestellt. Dadurch bleiben sie auch nach dem Schließen der Dateiauswahl erreichbar.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Button("Open Files app", systemImage: "folder") {
+                Button("Dateien-App öffnen", systemImage: "folder") {
                     if let url = URL(string: "shareddocuments://") { UIApplication.shared.open(url) }
                 }
-                Button("Refresh Upload Inbox", systemImage: "arrow.clockwise") { cloud.refreshLocalInbox() }
+                Button("Datei-Eingang aktualisieren", systemImage: "arrow.clockwise") { cloud.refreshLocalInbox() }
             }
 
-            Section("Local session") {
-                Button("Erase local Telegram login data", systemImage: "trash.fill", role: .destructive) { confirmReset = true }
-                Text("This does not delete files stored in Telegram Saved Messages.")
+            Section("Lokale Sitzung") {
+                Button("Lokale Telegram-Anmeldedaten löschen", systemImage: "trash.fill", role: .destructive) { confirmReset = true }
+                Text("In Telegram gespeicherte Dateien werden dadurch nicht gelöscht.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("Settings")
-        .confirmationDialog("Erase local Telegram login data?", isPresented: $confirmReset, titleVisibility: .visible) {
-            Button("Erase Local Telegram Data", role: .destructive) { telegram.resetAPICredentials() }
-            Button("Cancel", role: .cancel) { }
+        .navigationTitle("Einstellungen")
+        .confirmationDialog("Lokale Telegram-Anmeldedaten löschen?", isPresented: $confirmReset, titleVisibility: .visible) {
+            Button("Lokale Telegram-Daten löschen", role: .destructive) { telegram.resetAPICredentials() }
+            Button("Abbrechen", role: .cancel) { }
         }
     }
 }

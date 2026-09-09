@@ -235,7 +235,7 @@ struct OptimizedDriveBrowserV2: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(folderID == nil ? .large : .inline)
-        .searchable(text: $searchText, prompt: "Files, folders or tags")
+        .searchable(text: $searchText, prompt: "Dateien, Ordner oder Tags")
         .onChange(of: searchText) { _, value in
             visibleFolderLimit = 80
             visibleFileLimit = 120
@@ -307,7 +307,7 @@ struct OptimizedDriveBrowserV2: View {
         }
         .sheet(isPresented: $showingRenameItem) {
             RenameDriveItemSheet(
-                title: renameFolder == nil ? "Rename File" : "Rename Folder",
+                title: renameFolder == nil ? "Datei umbenennen" : "Ordner umbenennen",
                 name: $renameText,
                 onSave: {
                     if let renameFile { cloud.renameFile(renameFile, to: renameText) }
@@ -317,16 +317,16 @@ struct OptimizedDriveBrowserV2: View {
                 onCancel: clearRenameState
             )
         }
-        .confirmationDialog("Delete \(selectedFiles.count) selected file(s) from Telegram?", isPresented: $confirmBulkDelete, titleVisibility: .visible) {
-            Button("Delete from Telegram", role: .destructive) {
+        .confirmationDialog("\(selectedFiles.count) ausgewählte Dateien aus Telegram löschen?", isPresented: $confirmBulkDelete, titleVisibility: .visible) {
+            Button("Aus Telegram löschen", role: .destructive) {
                 let entries = selectedEntries
                 selectedFiles.removeAll(); isSelecting = false
                 entries.forEach(cloud.deleteFileFromTelegram)
             }
-            Button("Cancel", role: .cancel) { }
+            Button("Abbrechen", role: .cancel) { }
         }
         .confirmationDialog(
-            "Delete “\(pendingDeleteFolder?.name ?? "Folder")”?",
+            "„\(pendingDeleteFolder?.name ?? "Ordner")“ löschen?",
             isPresented: Binding(
                 get: { pendingDeleteFolder != nil },
                 set: { if !$0 { pendingDeleteFolder = nil } }
@@ -334,17 +334,17 @@ struct OptimizedDriveBrowserV2: View {
             titleVisibility: .visible
         ) {
             if let folder = pendingDeleteFolder, folderIsEmpty(folder) {
-                Button("Delete Empty Folder", role: .destructive) {
+                Button("Leeren Ordner löschen", role: .destructive) {
                     cloud.deleteFolder(folder)
                     pendingDeleteFolder = nil
                 }
             }
-            Button("Cancel", role: .cancel) { pendingDeleteFolder = nil }
+            Button("Abbrechen", role: .cancel) { pendingDeleteFolder = nil }
         } message: {
-            Text("Only empty folders can be deleted. This change is saved to your Telegram recovery catalog.")
+            Text("Es lassen sich nur leere Ordner löschen. Die Änderung wird im Telegram-Katalog gesichert.")
         }
         .confirmationDialog(
-            "Delete “\(pendingDeleteFile?.name ?? "File")” from Telegram?",
+            "„\(pendingDeleteFile?.name ?? "Datei")“ aus Telegram löschen?",
             isPresented: Binding(
                 get: { pendingDeleteFile != nil },
                 set: { if !$0 { pendingDeleteFile = nil } }
@@ -352,14 +352,14 @@ struct OptimizedDriveBrowserV2: View {
             titleVisibility: .visible
         ) {
             if let file = pendingDeleteFile {
-                Button("Delete from Telegram", role: .destructive) {
+                Button("Aus Telegram löschen", role: .destructive) {
                     cloud.deleteFileFromTelegram(file)
                     pendingDeleteFile = nil
                 }
             }
-            Button("Cancel", role: .cancel) { pendingDeleteFile = nil }
+            Button("Abbrechen", role: .cancel) { pendingDeleteFile = nil }
         } message: {
-            Text("All Telegram message parts belonging to this file will be removed. This cannot be undone in TGSpeicher.")
+            Text("Alle zugehörigen Telegram-Nachrichten werden gelöscht. Diese Aktion lässt sich in TGSpeicher nicht rückgängig machen.")
         }
     }
 
@@ -375,20 +375,20 @@ struct OptimizedDriveBrowserV2: View {
             }
 
             Menu {
-                Picker("View", selection: $preferences.driveViewMode) {
+                Picker("Ansicht", selection: $preferences.driveViewMode) {
                     ForEach(TGDriveViewMode.allCases) { mode in
                         Label(mode.label, systemImage: mode.icon).tag(mode)
                     }
                 }
-                Picker("Sort", selection: $preferences.sortMode) {
+                Picker("Sortieren", selection: $preferences.sortMode) {
                     ForEach(TGDriveSortMode.allCases) { mode in Text(mode.label).tag(mode) }
                 }
                 Divider()
-                Button("Upload Files", systemImage: "arrow.up.doc") { showingPicker = true }
-                Button("Upload from URL", systemImage: "link.badge.plus") { showingRemoteURL = true }
-                Button("New Folder", systemImage: "folder.badge.plus") { showingNewFolder = true }
+                Button("Dateien hochladen", systemImage: "arrow.up.doc") { showingPicker = true }
+                Button("Von einem Link hochladen", systemImage: "link.badge.plus") { showingRemoteURL = true }
+                Button("Neuer Ordner", systemImage: "folder.badge.plus") { showingNewFolder = true }
                 Divider()
-                Button("Refresh from Telegram", systemImage: "arrow.triangle.2.circlepath") { cloud.bootstrapFromTelegram() }
+                Button("Mit Telegram abgleichen", systemImage: "arrow.triangle.2.circlepath") { cloud.bootstrapFromTelegram() }
             } label: {
                 Image(systemName: "plus.circle.fill")
             }
@@ -457,19 +457,19 @@ struct OptimizedDriveBrowserV2: View {
                             .contextMenu { folderContextMenu(folder) }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) { pendingDeleteFolder = folder } label: {
-                                    Label("Delete", systemImage: "trash")
+                                    Label("Löschen", systemImage: "trash")
                                 }
                                 .disabled(!folderIsEmpty(folder))
                             }
                         }
                         if directory.folders.count > visibleFolderLimit {
-                            ProgressiveLoadSentinel(text: "More folders") {
+                            ProgressiveLoadSentinel(text: "Weitere Ordner") {
                                 visibleFolderLimit = min(directory.folders.count, visibleFolderLimit + 80)
                             }
                             .id("folders-\(visibleFolderLimit)")
                         }
                     } header: {
-                        sectionHeader("Folders", count: directory.folders.count)
+                        sectionHeader("Ordner", count: directory.folders.count)
                     }
                 }
 
@@ -487,7 +487,7 @@ struct OptimizedDriveBrowserV2: View {
                                 .buttonStyle(.plain)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) { pendingDeleteFile = file } label: {
-                                        Label("Delete", systemImage: "trash")
+                                        Label("Löschen", systemImage: "trash")
                                     }
                                 }
                             } else {
@@ -499,19 +499,19 @@ struct OptimizedDriveBrowserV2: View {
                                 .contextMenu { fileContextMenu(file) }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) { pendingDeleteFile = file } label: {
-                                        Label("Delete", systemImage: "trash")
+                                        Label("Löschen", systemImage: "trash")
                                     }
                                 }
                             }
                         }
                         if directory.files.count > visibleFileLimit {
-                            ProgressiveLoadSentinel(text: "More files") {
+                            ProgressiveLoadSentinel(text: "Weitere Dateien") {
                                 visibleFileLimit = min(directory.files.count, visibleFileLimit + 120)
                             }
                             .id("files-\(visibleFileLimit)")
                         }
                     } header: {
-                        sectionHeader("Files", count: directory.files.count)
+                        sectionHeader("Dateien", count: directory.files.count)
                     }
                 }
             }
@@ -573,7 +573,7 @@ struct OptimizedDriveBrowserV2: View {
                     }
 
                     if directory.folders.count > visibleFolderLimit || directory.files.count > visibleFileLimit {
-                        ProgressiveLoadSentinel(text: "Load next items") {
+                        ProgressiveLoadSentinel(text: "Weitere Einträge laden") {
                             visibleFolderLimit = min(directory.folders.count, visibleFolderLimit + 80)
                             visibleFileLimit = min(directory.files.count, visibleFileLimit + 120)
                         }
@@ -590,8 +590,8 @@ struct OptimizedDriveBrowserV2: View {
     private var browserHeader: some View {
         VStack(spacing: 9) {
             HStack(spacing: 8) {
-                OptimizedMiniMetric(title: "Files", value: "\(directory.currentUsage.fileCount)", icon: "doc.fill")
-                OptimizedMiniMetric(title: "Size", value: directory.currentUsage.bytes.byteCountString, icon: "externaldrive.fill")
+                OptimizedMiniMetric(title: "Dateien", value: "\(directory.currentUsage.fileCount)", icon: "doc.fill")
+                OptimizedMiniMetric(title: "Größe", value: directory.currentUsage.bytes.byteCountString, icon: "externaldrive.fill")
                 OptimizedMiniMetric(title: "Visible", value: "\(min(directory.files.count, visibleFileLimit))", icon: "eye.fill")
             }
 
@@ -599,11 +599,11 @@ struct OptimizedDriveBrowserV2: View {
                 Image(systemName: directory.isLoading ? "hourglass" : (folderID == nil ? "checkmark.icloud.fill" : "folder.fill"))
                     .foregroundStyle(folderID == nil ? Color.blue : Color.orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(folderID == nil ? "Telegram cloud workspace" : "Lazy folder view")
+                    Text(folderID == nil ? "Dein Telegram-Speicher" : "Ordnerübersicht")
                         .font(.subheadline.weight(.semibold))
                     Text(directory.isLoading
-                         ? "Building an optimized directory snapshot…"
-                         : "Only the visible part is rendered; more items load while scrolling.")
+                         ? "Ordneransicht wird vorbereitet …"
+                         : "Weitere Einträge werden beim Scrollen geladen.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -620,9 +620,9 @@ struct OptimizedDriveBrowserV2: View {
     private var loadingState: some View {
         VStack(spacing: 10) {
             ProgressView()
-            Text("Opening folder efficiently…")
+            Text("Ordner wird geöffnet …")
                 .font(.subheadline.weight(.medium))
-            Text("TGSpeicher is indexing this level off the main thread.")
+            Text("Die Dateien werden für die Ansicht vorbereitet.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -660,24 +660,24 @@ struct OptimizedDriveBrowserV2: View {
 
     @ViewBuilder
     private func folderContextMenu(_ folder: CloudFolder) -> some View {
-        Button("Rename", systemImage: "pencil") { beginRename(folder) }
+        Button("Umbenennen", systemImage: "pencil") { beginRename(folder) }
         Divider()
         if folderIsEmpty(folder) {
-            Button("Delete Empty Folder", systemImage: "trash", role: .destructive) {
+            Button("Leeren Ordner löschen", systemImage: "trash", role: .destructive) {
                 pendingDeleteFolder = folder
             }
         } else {
-            Button("Folder Is Not Empty", systemImage: "folder.badge.questionmark") { }
+            Button("Ordner ist nicht leer", systemImage: "folder.badge.questionmark") { }
                 .disabled(true)
         }
     }
 
     @ViewBuilder
     private func fileContextMenu(_ file: CloudFileEntry) -> some View {
-        Button("Preview & Details", systemImage: "eye.fill") { actionNavigationFileID = file.id }
-        Button("Download", systemImage: "arrow.down.doc") { cloud.downloadAndReassemble(file) }
+        Button("Vorschau & Details", systemImage: "eye.fill") { actionNavigationFileID = file.id }
+        Button("Herunterladen", systemImage: "arrow.down.doc") { cloud.downloadAndReassemble(file) }
         Divider()
-        Button("Move", systemImage: "folder") {
+        Button("Verschieben", systemImage: "folder") {
             itemActionFile = file
             showingItemMove = true
         }
@@ -685,9 +685,9 @@ struct OptimizedDriveBrowserV2: View {
             itemActionFile = file
             showingItemTags = true
         }
-        Button("Rename", systemImage: "pencil") { beginRename(file) }
+        Button("Umbenennen", systemImage: "pencil") { beginRename(file) }
         Divider()
-        Button("Delete from Telegram", systemImage: "trash", role: .destructive) {
+        Button("Aus Telegram löschen", systemImage: "trash", role: .destructive) {
             pendingDeleteFile = file
         }
     }
@@ -742,9 +742,9 @@ private struct RenameDriveItemSheet: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
+                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen", action: onCancel) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: onSave)
+                    Button("Speichern", action: onSave)
                         .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -788,7 +788,7 @@ private struct OptimizedFolderRow: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(folder.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                Text("\(usage.fileCount) files • \(usage.bytes.byteCountString)" + (usage.childFolderCount > 0 ? " • \(usage.childFolderCount) folders" : ""))
+                Text("\(usage.fileCount) Dateien • \(usage.bytes.byteCountString)" + (usage.childFolderCount > 0 ? " • \(usage.childFolderCount) Ordner" : ""))
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -819,7 +819,7 @@ private struct OptimizedFileRow: View {
                 Text(file.name).font(.subheadline.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
                 HStack(spacing: 3) {
                     Text(file.totalSize.byteCountString)
-                    if file.chunks.count > 1 { Text("• \(file.chunks.count) parts") }
+                    if file.chunks.count > 1 { Text("• \(file.chunks.count) Teile") }
                     if let tagName { Text("• #\(tagName)") }
                 }
                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
@@ -852,7 +852,7 @@ private struct OptimizedFolderTile: View {
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
             Text(folder.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(2)
-            Text("\(usage.fileCount) files • \(usage.bytes.byteCountString)")
+            Text("\(usage.fileCount) Dateien • \(usage.bytes.byteCountString)")
                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, minHeight: 110, alignment: .leading)
@@ -919,3 +919,4 @@ private extension View {
         }
     }
 }
+

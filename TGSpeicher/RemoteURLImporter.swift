@@ -20,7 +20,7 @@ final class RemoteURLImporter: ObservableObject {
         guard !isRunning else { return }
 
         isRunning = true
-        status = "Downloading remote file…"
+        status = "Datei wird vom Link geladen …"
         lastError = nil
 
         Task {
@@ -46,10 +46,10 @@ final class RemoteURLImporter: ObservableObject {
                 try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try FileManager.default.moveItem(at: temporaryURL, to: destination)
 
-                status = "Adding to durable upload queue…"
+                status = "Wird in die gespeicherte Warteschlange eingereiht …"
                 queue.enqueuePreparedFile(destination, folderID: folderID, tagIDs: tagIDs)
                 isRunning = false
-                status = "Remote file queued"
+                status = "Datei vom Link eingereiht"
 
             } catch {
                 isRunning = false
@@ -59,3 +59,4 @@ final class RemoteURLImporter: ObservableObject {
         }
     }
 }
+
