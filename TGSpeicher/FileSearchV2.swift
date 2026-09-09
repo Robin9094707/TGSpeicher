@@ -32,7 +32,7 @@ struct FileDetailV2: View {
                         Text(file.totalSize.byteCountString).foregroundStyle(.secondary)
 
                         if file.isTGImage || file.isTGVideo {
-                            Button(file.isTGVideo ? "Open Original Video" : "Cloud Preview", systemImage: file.isTGVideo ? "play.circle.fill" : "photo.fill") {
+                            Button(file.isTGVideo ? "Originalvideo öffnen" : "Telegram-Vorschau", systemImage: file.isTGVideo ? "play.circle.fill" : "photo.fill") {
                                 showingCloudPreview = true
                             }
                             .buttonStyle(.borderedProminent)
@@ -40,7 +40,7 @@ struct FileDetailV2: View {
                         }
 
                         HStack {
-                            Button(localURL == nil ? "Download" : "Refresh", systemImage: "arrow.down.doc.fill") {
+                            Button(localURL == nil ? "Herunterladen" : "Aktualisieren", systemImage: "arrow.down.doc.fill") {
                                 previewAfterDownload = false
                                 cloud.downloadAndReassemble(file)
                             }
@@ -48,10 +48,10 @@ struct FileDetailV2: View {
                             .disabled(cloud.isDownloading)
 
                             if localURL != nil {
-                                Button("Preview", systemImage: "eye.fill") { showingPreview = true }
+                                Button("Vorschau", systemImage: "eye.fill") { showingPreview = true }
                                     .buttonStyle(.bordered)
                             } else if !file.isTGImage && !file.isTGVideo {
-                                Button("Preview", systemImage: "eye.fill") {
+                                Button("Vorschau", systemImage: "eye.fill") {
                                     previewAfterDownload = true
                                     cloud.downloadAndReassemble(file)
                                 }
@@ -62,7 +62,7 @@ struct FileDetailV2: View {
 
                         if let localURL {
                             ShareLink(item: localURL) {
-                                Label("Share / Open In…", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                                Label("Teilen / Öffnen in …", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.bordered)
                         }
@@ -71,17 +71,17 @@ struct FileDetailV2: View {
 
                     VStack(alignment: .leading, spacing: 10) {
                         Label("Information", systemImage: "info.circle.fill").font(.headline)
-                        LabeledContent("Size", value: file.totalSize.byteCountString)
-                        LabeledContent("Chunks", value: "\(file.chunks.count)")
-                        LabeledContent("Type", value: file.typeLabel)
-                        LabeledContent("Created", value: file.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        LabeledContent("Modified", value: file.modifiedAt.formatted(date: .abbreviated, time: .shortened))
-                        LabeledContent("Cloud source", value: "Telegram Saved Messages")
+                        LabeledContent("Größe", value: file.totalSize.byteCountString)
+                        LabeledContent("Dateiteile", value: "\(file.chunks.count)")
+                        LabeledContent("Typ", value: file.typeLabel)
+                        LabeledContent("Erstellt", value: file.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        LabeledContent("Geändert", value: file.modifiedAt.formatted(date: .abbreviated, time: .shortened))
+                        LabeledContent("Telegram-Quelle", value: "Telegram: Gespeichertes")
                         if let folderID = file.folderID {
                             let path = cloud.folderPath(for: folderID).map(\.name).joined(separator: " / ")
-                            LabeledContent("Folder", value: path.isEmpty ? "TG Drive" : path)
+                            LabeledContent("Ordner", value: path.isEmpty ? "Meine Dateien" : path)
                         } else {
-                            LabeledContent("Folder", value: "TG Drive")
+                            LabeledContent("Ordner", value: "Meine Dateien")
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,7 +90,7 @@ struct FileDetailV2: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("Tags", systemImage: "tag.fill").font(.headline)
                         if cloud.tags.isEmpty {
-                            Text("No tags yet. Create tags in Settings.").font(.subheadline).foregroundStyle(.secondary)
+                            Text("Noch keine Tags. Erstelle welche in den Einstellungen.").font(.subheadline).foregroundStyle(.secondary)
                         } else {
                             ForEach(cloud.tags) { tag in
                                 Button {
@@ -113,12 +113,12 @@ struct FileDetailV2: View {
                     .tgGlassCard()
 
                     VStack(alignment: .leading, spacing: 12) {
-                        Label("Location", systemImage: "folder.fill").font(.headline).foregroundStyle(.orange)
-                        Picker("Folder", selection: Binding(
+                        Label("Speicherort", systemImage: "folder.fill").font(.headline).foregroundStyle(.orange)
+                        Picker("Ordner", selection: Binding(
                             get: { file.folderID },
                             set: { cloud.moveFile(file, to: $0) }
                         )) {
-                            Text("TG Drive").tag(UUID?.none)
+                            Text("Meine Dateien").tag(UUID?.none)
                             ForEach(cloud.index.folders.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }) { folder in
                                 Text(cloud.folderPath(for: folder.id).map(\.name).joined(separator: " / ")).tag(Optional(folder.id))
                             }
@@ -129,9 +129,9 @@ struct FileDetailV2: View {
                     .tgGlassCard()
 
                     VStack(alignment: .leading, spacing: 12) {
-                        Label("Rename", systemImage: "pencil").font(.headline)
+                        Label("Umbenennen", systemImage: "pencil").font(.headline)
                         TextField(file.name, text: $renameText).textFieldStyle(.roundedBorder)
-                        Button("Rename File") {
+                        Button("Datei umbenennen") {
                             cloud.renameFile(file, to: renameText)
                             renameText = ""
                         }
@@ -142,26 +142,26 @@ struct FileDetailV2: View {
                     .tgGlassCard()
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("Integrity", systemImage: "checkmark.shield.fill").font(.headline)
-                        LabeledContent("Telegram parts", value: "\(file.chunks.count)")
+                        Label("Integrität", systemImage: "checkmark.shield.fill").font(.headline)
+                        LabeledContent("Telegram-Dateiteile", value: "\(file.chunks.count)")
                         if let hash = file.sha256 {
                             Text(hash).font(.system(.caption2, design: .monospaced)).textSelection(.enabled).foregroundStyle(.secondary)
                         } else {
-                            Text("No whole-file SHA-256 stored for this entry.").font(.caption).foregroundStyle(.secondary)
+                            Text("Für diese Datei ist keine vollständige SHA-256-Prüfsumme gespeichert.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .tgGlassCard()
 
-                    Button("Delete from Telegram", systemImage: "trash.fill", role: .destructive) { confirmDelete = true }
+                    Button("Aus Telegram löschen", systemImage: "trash.fill", role: .destructive) { confirmDelete = true }
                         .buttonStyle(.bordered)
                 }
                 .padding(14)
             } else {
-                ContentUnavailableView("File not found", systemImage: "doc.questionmark")
+                ContentUnavailableView("Datei nicht gefunden", systemImage: "doc.questionmark")
             }
         }
-        .navigationTitle("File")
+        .navigationTitle("Datei")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: cloud.isDownloading) { _, downloading in
             if !downloading, previewAfterDownload, localURL != nil {
@@ -175,9 +175,9 @@ struct FileDetailV2: View {
         .sheet(isPresented: $showingCloudPreview) {
             if let file { CloudMediaPreviewSheet(file: file, cloud: cloud) }
         }
-        .confirmationDialog("Delete this file from Telegram Saved Messages?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            if let file { Button("Delete from Telegram", role: .destructive) { cloud.deleteFileFromTelegram(file) } }
-            Button("Cancel", role: .cancel) { }
+        .confirmationDialog("Diese Datei dauerhaft aus Telegram löschen?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            if let file { Button("Aus Telegram löschen", role: .destructive) { cloud.deleteFileFromTelegram(file) } }
+            Button("Abbrechen", role: .cancel) { }
         }
     }
 }
@@ -201,7 +201,7 @@ struct SearchHubV2: View {
             if query.isEmpty {
                 Section("Tags") {
                     if cloud.tags.isEmpty {
-                        Text("No tags yet").foregroundStyle(.secondary)
+                        Text("Noch keine Tags").foregroundStyle(.secondary)
                     } else {
                         ForEach(cloud.tags) { tag in
                             NavigationLink {
@@ -218,9 +218,9 @@ struct SearchHubV2: View {
                 }
             }
 
-            Section(query.isEmpty ? "Recent files" : "Results") {
+            Section(query.isEmpty ? "Zuletzt verwendete Dateien" : "Ergebnisse") {
                 if results.isEmpty {
-                    ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("No files match \(query)."))
+                    ContentUnavailableView("Keine Ergebnisse", systemImage: "magnifyingglass", description: Text("Keine Dateien für „\(query)“ gefunden."))
                 } else {
                     ForEach(results) { file in
                         NavigationLink {
@@ -232,7 +232,8 @@ struct SearchHubV2: View {
                 }
             }
         }
-        .navigationTitle("Search")
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Name or tag")
+        .navigationTitle("Suchen")
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Name oder Tag")
     }
 }
+

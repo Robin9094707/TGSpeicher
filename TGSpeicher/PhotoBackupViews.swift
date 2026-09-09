@@ -112,7 +112,7 @@ struct PhotoBackupView: View {
             }
             .padding(14)
         }
-        .navigationTitle("Photo Backup")
+        .navigationTitle("Fotosicherung")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -134,16 +134,16 @@ struct PhotoBackupView: View {
             }
         }
         .confirmationDialog(
-            "Remove fully backed-up items from the iPhone Photos library?",
+            "Vollständig zugeordnete Medien aus der iPhone-Mediathek entfernen?",
             isPresented: $confirmDeleteLocal,
             titleVisibility: .visible
         ) {
-            Button("Delete \(manager.deletableAssetCount) Backed-Up Item(s)", role: .destructive) {
+            Button("\(manager.deletableAssetCount) gesicherte Medien löschen", role: .destructive) {
                 manager.deleteFullyBackedUpAssetsFromPhotos()
             }
-            Button("Cancel", role: .cancel) { }
+            Button("Abbrechen", role: .cancel) { }
         } message: {
-            Text("Only items whose required resources are present in the TGSpeicher cloud index are included. iOS may show an additional Photos confirmation.")
+            Text("Es werden nur Medien mit vollständig zugeordneten Sicherungen berücksichtigt. iOS fragt möglicherweise zusätzlich nach einer Bestätigung.")
         }
     }
 
@@ -156,7 +156,7 @@ struct PhotoBackupView: View {
                 }
                 .frame(width: 58, height: 58)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Telegram Photo Vault").font(.title3.bold())
+                    Text("Deine Fotos in Telegram").font(.title3.bold())
                     Text(manager.statusText).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
@@ -165,7 +165,7 @@ struct PhotoBackupView: View {
             if manager.isExportingFromPhotos {
                 ProgressView(value: manager.iCloudProgress)
                 HStack {
-                    Text(manager.currentFileName ?? "Preparing photo…").lineLimit(1)
+                    Text(manager.currentFileName ?? "Foto wird vorbereitet …").lineLimit(1)
                     Spacer()
                     Text("\(Int(manager.iCloudProgress * 100))%").monospacedDigit()
                 }
@@ -179,10 +179,10 @@ struct PhotoBackupView: View {
     private var permissionCard: some View {
         VStack(spacing: 14) {
             Image(systemName: "photo.badge.plus").font(.system(size: 44)).foregroundStyle(.blue)
-            Text("Allow Photos access").font(.title3.bold())
-            Text("TGSpeicher can read your Photos library, fetch media from iCloud when needed, and back it up as native photos and videos to your selected Telegram channel.")
+            Text("Fotozugriff erlauben").font(.title3.bold())
+            Text("TGSpeicher liest deine Mediathek, lädt Originale bei Bedarf aus iCloud und sichert sie als Fotos und Videos im gewählten Telegram-Kanal.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button("Allow Full Photos Access", systemImage: "checkmark.shield.fill") {
+            Button("Vollständigen Fotozugriff erlauben", systemImage: "checkmark.shield.fill") {
                 manager.requestFullAccess()
             }
             .buttonStyle(.borderedProminent)
@@ -199,9 +199,9 @@ struct PhotoBackupView: View {
                 .frame(width: 34, height: 34)
                 .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
-                Text("Telegram Backup Channel").font(.subheadline.weight(.semibold))
+                Text("Telegram-Sicherungskanal").font(.subheadline.weight(.semibold))
                 Text(manager.selectedDestinationTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Text("Photos and videos appear as native Telegram media")
+                Text("Fotos und Videos direkt in Telegram ansehen")
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
@@ -214,7 +214,7 @@ struct PhotoBackupView: View {
                     }
                 }
                 Divider()
-                Button("Refresh Channels", systemImage: "arrow.clockwise") {
+                Button("Kanäle aktualisieren", systemImage: "arrow.clockwise") {
                     manager.refreshBackupDestinations()
                 }
             } label: {
@@ -230,38 +230,38 @@ struct PhotoBackupView: View {
 
     private var statistics: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-            PhotoMetric(title: "Library", value: "\(manager.totalAssets)", icon: "photo.on.rectangle.angled")
-            PhotoMetric(title: "Backed up", value: "\(manager.backedUpAssets)", icon: "checkmark.icloud.fill")
-            PhotoMetric(title: "Resources", value: "\(manager.backedUpResources)/\(manager.totalResources)", icon: "square.stack.3d.up.fill")
-            PhotoMetric(title: "Remaining", value: "\(manager.pendingResources)", icon: "clock.arrow.circlepath")
+            PhotoMetric(title: "Mediathek", value: "\(manager.totalAssets)", icon: "photo.on.rectangle.angled")
+            PhotoMetric(title: "Gesichert", value: "\(manager.backedUpAssets)", icon: "checkmark.icloud.fill")
+            PhotoMetric(title: "Bestandteile", value: "\(manager.backedUpResources)/\(manager.totalResources)", icon: "square.stack.3d.up.fill")
+            PhotoMetric(title: "Verbleibend", value: "\(manager.pendingResources)", icon: "clock.arrow.circlepath")
         }
     }
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Backup Control", systemImage: "externaldrive.badge.icloud").font(.headline)
+            Label("Sicherung steuern", systemImage: "externaldrive.badge.icloud").font(.headline)
 
             HStack(spacing: 10) {
                 if manager.isRunning && !manager.isPaused {
-                    Button("Pause", systemImage: "pause.fill") { manager.pauseBackup() }
+                    Button("Pausieren", systemImage: "pause.fill") { manager.pauseBackup() }
                         .buttonStyle(.borderedProminent)
                 } else {
-                    Button(manager.isPaused ? "Continue" : "Start Backup", systemImage: "play.fill") {
+                    Button(manager.isPaused ? "Fortsetzen" : "Sicherung starten", systemImage: "play.fill") {
                         manager.resumeBackup(nightMode: false)
                     }
                     .buttonStyle(.borderedProminent)
                 }
-                Button("Night Mode", systemImage: "moon.stars.fill") {
+                Button("Nachtmodus", systemImage: "moon.stars.fill") {
                     manager.resumeBackup(nightMode: true)
                 }
                 .buttonStyle(.bordered)
             }
 
-            Toggle("Auto-continue when TGSpeicher opens", isOn: $manager.autoResumeOnLaunch)
+            Toggle("Beim Öffnen automatisch fortsetzen", isOn: $manager.autoResumeOnLaunch)
 
             Divider()
 
-            Button("Verify & repair missing Telegram files", systemImage: "checkmark.shield") {
+            Button("Telegram-Dateien prüfen", systemImage: "checkmark.shield") {
                 manager.verifyAndRepairMissingCloudFiles()
             }
             .disabled(manager.isVerifying)
@@ -270,12 +270,12 @@ struct PhotoBackupView: View {
                 HStack { ProgressView(); Text(manager.statusText).font(.caption).foregroundStyle(.secondary) }
             }
 
-            Button("Remove backed-up originals from iPhone…", systemImage: "trash", role: .destructive) {
+            Button("Gesicherte Originale vom iPhone entfernen …", systemImage: "trash", role: .destructive) {
                 confirmDeleteLocal = true
             }
             .disabled(manager.deletableAssetCount == 0)
 
-            Text("Deletion is always optional. TGSpeicher only offers Photos items whose required backup resources are mapped to cloud files.")
+            Text("Zum Entfernen der Originale zuerst „Telegram-Dateien prüfen“ ausführen. Erst wenn alle zugeordneten Telegram-Nachrichten erreichbar sind, wird das Löschen angeboten.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -285,14 +285,14 @@ struct PhotoBackupView: View {
     private var diagnostics: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("Backup Diagnostics", systemImage: "wrench.and.screwdriver.fill")
+                Label("Sicherungsprotokoll", systemImage: "wrench.and.screwdriver.fill")
                     .font(.headline)
                 Spacer()
                 Text("\(manager.recentFailures.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Text("Recoverable errors are logged here. They do not stop Night Backup.")
+            Text("Hier findest du aufgetretene Fehler und erneute Versuche. Unklare Uploads werden vor einer Wiederholung geprüft.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -307,7 +307,7 @@ struct PhotoBackupView: View {
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
-                    Text("\(failure.stage) • attempt \(failure.attempt)")
+                    Text("\(failure.stage) • Versuch \(failure.attempt)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Text(failure.message)
@@ -318,7 +318,7 @@ struct PhotoBackupView: View {
                 if failure.id != manager.recentFailures.prefix(5).last?.id { Divider() }
             }
 
-            Button("Clear diagnostics", systemImage: "trash") {
+            Button("Protokoll leeren", systemImage: "trash") {
                 manager.clearFailureHistory()
             }
             .font(.caption)
@@ -367,7 +367,7 @@ private struct CloudGallerySection: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Cloud Gallery", systemImage: "photo.stack").font(.headline)
+                Label("Telegram-Galerie", systemImage: "photo.stack").font(.headline)
                 Spacer()
                 if model.isPreparing {
                     ProgressView().controlSize(.small)
@@ -379,15 +379,15 @@ private struct CloudGallerySection: View, Equatable {
             if model.isPreparing && model.records.isEmpty {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("Preparing gallery efficiently…").font(.caption).foregroundStyle(.secondary)
+                    Text("Galerie wird geladen …").font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 24)
             } else if model.records.isEmpty {
                 ContentUnavailableView(
-                    "No backed-up media yet",
+                    "Noch keine Medien gesichert",
                     systemImage: "photo.stack",
-                    description: Text("Start Photo Backup and your Telegram cloud gallery will appear here.")
+                    description: Text("Starte die Fotosicherung. Deine in Telegram gesicherten Medien erscheinen hier.")
                 )
                 .frame(maxWidth: .infinity)
             } else {
@@ -593,7 +593,7 @@ private struct GalleryLoadSentinel: View {
     var body: some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
-            Text("\(remaining) more items")
+            Text("\(remaining) weitere Medien")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -618,7 +618,7 @@ struct NightPhotoBackupScreen: View {
             VStack(spacing: 20) {
                 Spacer()
                 Image(systemName: "moon.stars.fill").font(.system(size: 46)).foregroundStyle(.white.opacity(0.9))
-                Text("Night Backup").font(.title2.bold()).foregroundStyle(.white)
+                Text("Nachtsicherung").font(.title2.bold()).foregroundStyle(.white)
                 Text(manager.currentFileName ?? manager.statusText)
                     .font(.subheadline).foregroundStyle(.white.opacity(0.65)).lineLimit(2).multilineTextAlignment(.center)
 
@@ -629,7 +629,7 @@ struct NightPhotoBackupScreen: View {
                     HStack(spacing: 16) {
                         Text("\(Int(telemetry.fraction * 100))%").monospacedDigit()
                         Text(telemetry.speedText)
-                        Text("ETA \(telemetry.etaText)")
+                        Text("Restzeit \(telemetry.etaText)")
                     }
                     .font(.caption).foregroundStyle(.white.opacity(0.65))
                     Text(upload.status).font(.caption2).foregroundStyle(.white.opacity(0.5))
@@ -640,19 +640,19 @@ struct NightPhotoBackupScreen: View {
                     ProgressView().tint(.white)
                 }
 
-                Text("\(manager.backedUpAssets) / \(manager.totalAssets) library items backed up")
+                Text("\(manager.backedUpAssets) / \(manager.totalAssets) Medien gesichert")
                     .font(.caption).foregroundStyle(.white.opacity(0.5))
                 if !manager.recentFailures.isEmpty {
-                    Text("\(manager.recentFailures.count) recovered issue(s) logged • Night Backup continues")
+                    Text("\(manager.recentFailures.count) Vorfälle protokolliert • Nachtsicherung läuft weiter")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.45))
                         .multilineTextAlignment(.center)
                 }
                 Spacer()
                 HStack {
-                    Button("Pause", systemImage: "pause.fill") { manager.pauseBackup() }
+                    Button("Pausieren", systemImage: "pause.fill") { manager.pauseBackup() }
                         .buttonStyle(.borderedProminent)
-                    Button("Stop", systemImage: "stop.fill", role: .destructive) { manager.stopBackup() }
+                    Button("Stoppen", systemImage: "stop.fill", role: .destructive) { manager.stopBackup() }
                         .buttonStyle(.bordered)
                 }
                 .padding(.bottom, 24)
@@ -662,3 +662,4 @@ struct NightPhotoBackupScreen: View {
         .persistentSystemOverlays(.hidden)
     }
 }
+

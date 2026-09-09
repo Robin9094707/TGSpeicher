@@ -107,13 +107,13 @@ final class PhotoBackupManager: ObservableObject {
     @Published private(set) var isScanningLibrary = false
     @Published private(set) var currentFileName: String?
     @Published private(set) var iCloudProgress: Double = 0
-    @Published private(set) var statusText = "Photo backup is ready"
+    @Published private(set) var statusText = "Fotosicherung ist bereit"
     @Published private(set) var latestCompletedRecord: PhotoBackupRecord?
     @Published private(set) var recentFailures: [PhotoBackupFailureRecord] = []
     @Published var lastError: String?
     @Published private(set) var backupDestinations: [TelegramBackupDestination] = []
     @Published private(set) var selectedDestinationID: Int64?
-    @Published private(set) var selectedDestinationTitle = "Saved Messages"
+    @Published private(set) var selectedDestinationTitle = "Gespeichertes"
     @Published var autoResumeOnLaunch: Bool {
         didSet { defaults.set(autoResumeOnLaunch, forKey: Self.autoResumeKey) }
     }
@@ -132,6 +132,7 @@ final class PhotoBackupManager: ObservableObject {
     private var requiredResourceCountByAssetID: [String: Int] = [:]
     private var backedResourceCountByAssetID: [String: Int] = [:]
     private var fullyBackedUpAssetIDsCache = Set<String>()
+    private var verifiedForDeletionAssetIDs = Set<String>()
     private var currentCandidate: PhotoBackupCandidate?
     private var currentQueueItemID: UUID?
     private var currentExportURL: URL?
@@ -151,6 +152,7 @@ final class PhotoBackupManager: ObservableObject {
     private var libraryScanGeneration = UUID()
     private var lastLibraryScanAt: Date?
     private var backupRunGeneration = UUID()
+    private var boundAccountID: Int64?
 
     private static let autoResumeKey = "photos.autoResumeOnLaunch.v1"
     private static let backupEnabledKey = "photos.backupEnabled"
@@ -184,13 +186,13 @@ final class PhotoBackupManager: ObservableObject {
         queue.$lastError
             .compactMap { $0 }
             .receive(on: RunLoop.main)
-            .sink { [weak self] message in self?.captureOperationalError(message, stage: "Upload queue") }
+            .sink { [weak self] message in self?.captureOperationalError(message, stage: "Upload-Warteschlange") }
             .store(in: &cancellables)
 
         cloud.$lastError
             .compactMap { $0 }
             .receive(on: RunLoop.main)
-            .sink { [weak self] message in self?.captureOperationalError(message, stage: "Telegram upload") }
+            .sink { [weak self] message in self?.captureOperationalError(message, stage: "Telegram-Upload") }
             .store(in: &cancellables)
 
         telegram.$lastError
@@ -205,7 +207,19 @@ final class PhotoBackupManager: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] savedID in
                 guard let self else { return }
-                if self.selectedDestinationID == nil { self.selectBackupDestinationID(savedID, title: "Saved Messages", restore: false) }
+                if let previous = self.boundAccountID, previous != savedID {
+                    self.backupRunGeneration = UUID()
+                    self.libraryScanGeneration = UUID()
+                    self.candidates = []
+                    self.recordsByKey = [:]
+                    self.verifiedForDeletionAssetIDs = []
+                    self.currentCandidate = nil
+                    self.currentQueueItemID = nil
+                    self.lastLibraryScanAt = nil
+                    self.selectedDestinationID = nil
+                }
+                self.boundAccountID = savedID
+                if self.selectedDestinationID == nil { self.selectBackupDestinationID(savedID, title: "Gespeichertes", restore: false) }
                 self.rebuildDestinationList()
                 if let selected = self.selectedDestinationID, selected != savedID {
                     self.telegram.send(["@type": "getChat", "chat_id": selected]) { [weak self] chat in
@@ -214,6 +228,24 @@ final class PhotoBackupManager: ObservableObject {
                     }
                 }
                 self.restoreRemoteIndex()
+            }
+            .store(in: &cancellables)
+
+        cloud.$recoveryReady
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] ready in
+                guard let self else { return }
+                self.remoteIndexReady = ready
+                if ready {
+                    if let destination = self.cloud.index.recovery?.destinationChatID ?? self.telegram.savedMessagesChatID {
+                        self.selectedDestinationID = destination
+                        self.defaults.set(String(destination), forKey: Self.destinationKey)
+                    }
+                    self.rebuildDestinationList()
+                    self.reconcileRecordsWithCloudIndex()
+                    self.refreshAfterRemoteIndexReady()
+                } else { self.statusText = "Telegram-Katalog wird wiederhergestellt …" }
             }
             .store(in: &cancellables)
 
@@ -229,7 +261,7 @@ final class PhotoBackupManager: ObservableObject {
                 self.authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
                 guard self.hasLibraryAccess else { return }
                 guard self.remoteIndexReady else {
-                    self.statusText = "Restoring the Telegram photo index…"
+                    self.statusText = "Telegram-Fotokatalog wird wiederhergestellt …"
                     return
                 }
                 // Do not repeatedly rescan a large iCloud library every time a sheet closes
@@ -265,8 +297,9 @@ final class PhotoBackupManager: ObservableObject {
     func refreshBackupDestinations() { telegram.refreshWritableBackupChannels() }
 
     func selectBackupDestination(_ destination: TelegramBackupDestination) {
-        guard cloud.upload == nil, currentQueueItemID == nil else {
-            lastError = "Pause the current upload before changing the Telegram backup channel."
+        guard cloud.upload == nil, currentQueueItemID == nil, !cloud.isRefreshing, !cloud.isCatalogSyncing,
+              !queue.items.contains(where: { $0.state == .queued || $0.state == .uploading }) else {
+            lastError = "Warte laufende Übertragungen und die Wiederherstellung ab, bevor du den Sicherungskanal wechselst."
             return
         }
         selectBackupDestinationID(destination.id, title: destination.title, restore: true)
@@ -280,15 +313,15 @@ final class PhotoBackupManager: ObservableObject {
         defaults.removeObject(forKey: "photos.snapshotMessageID")
         if restore {
             remoteIndexReady = false
-            statusText = "Restoring backup index from \(title)…"
-            restoreRemoteIndex()
+            statusText = "Sicherung aus „\(title)“ wird wiederhergestellt …"
+            cloud.setRecoveryDestination(id)
         }
     }
 
     private func rebuildDestinationList() {
         var result = telegram.writableBackupChannels
         if let saved = telegram.savedMessagesChatID {
-            result.insert(TelegramBackupDestination(id: saved, title: "Saved Messages", isSavedMessages: true), at: 0)
+            result.insert(TelegramBackupDestination(id: saved, title: "Gespeichertes", isSavedMessages: true), at: 0)
         }
         backupDestinations = result
         if let selectedDestinationID,
@@ -312,25 +345,28 @@ final class PhotoBackupManager: ObservableObject {
                 guard let self else { return }
                 self.authorizationStatus = status
                 if self.hasLibraryAccess {
-                    self.statusText = status == .limited ? "Limited Photos access granted" : "Full Photos access granted"
+                    self.statusText = status == .limited ? "Eingeschränkter Fotozugriff erlaubt" : "Vollständiger Fotozugriff erlaubt"
                     self.refreshLibrary()
                 } else {
-                    self.lastError = "TGSpeicher needs Photos access to back up your library."
+                    self.lastError = "TGSpeicher benötigt Fotozugriff, um deine Mediathek zu sichern."
                 }
             }
         }
     }
 
     func refreshLibrary() {
-        guard hasLibraryAccess else { return }
+        guard hasLibraryAccess, cloud.recoveryReady else { return }
         guard !isScanningLibrary else { return }
 
+        verifiedForDeletionAssetIDs = []
+        deletableAssetCount = 0
         let generation = UUID()
         libraryScanGeneration = generation
         isScanningLibrary = true
-        statusText = "Scanning Photos library in background…"
+        statusText = "Mediathek wird durchsucht …"
         let knownRecords = recordsByKey
-        let cloudFiles = cloud.index.files
+        let destination = selectedDestinationID ?? telegram.savedMessagesChatID
+        let cloudFiles = cloud.index.files.filter { $0.isComplete && ($0.telegramChatID ?? telegram.savedMessagesChatID) == destination }
 
         libraryScanQueue.async { [weak self] in
             guard let self else { return }
@@ -420,13 +456,13 @@ final class PhotoBackupManager: ObservableObject {
                 self.backedUpResources = newCandidates.count - newPendingCandidates.count
                 self.pendingResources = newPendingCandidates.count
                 self.backedUpAssets = fullyBackedAssetIDs.count
-                self.deletableAssetCount = fullyBackedAssetIDs.count
+                self.deletableAssetCount = fullyBackedAssetIDs.intersection(self.verifiedForDeletionAssetIDs).count
                 self.isScanningLibrary = false
                 self.lastLibraryScanAt = Date()
                 self.reconcileRecordsWithCloudIndex()
                 self.statusText = self.pendingResources == 0
-                    ? "Photos library is fully backed up"
-                    : "Photos scan complete • \(self.pendingResources) resource(s) pending"
+                    ? "Mediathek vollständig gesichert"
+                    : "Mediathek geprüft • \(self.pendingResources) Bestandteile ausstehend"
 
                 if self.isRunning && !self.isPaused {
                     self.processNextIfPossible()
@@ -447,7 +483,7 @@ final class PhotoBackupManager: ObservableObject {
         isRunning = true
         isPaused = false
         isNightMode = nightMode
-        statusText = nightMode ? "Night backup running" : "Photo backup running"
+        statusText = nightMode ? "Nachtsicherung läuft" : "Fotosicherung läuft"
         if nightMode { applyNightMode() }
 
         if candidates.isEmpty || lastLibraryScanAt == nil {
@@ -461,7 +497,7 @@ final class PhotoBackupManager: ObservableObject {
         backupRunGeneration = UUID()
         isPaused = true
         persistSession(enabled: true, paused: true, nightMode: false)
-        statusText = currentQueueItemID == nil ? "Backup paused" : "Pausing after the current upload"
+        statusText = currentQueueItemID == nil ? "Sicherung pausiert" : "Nach dem aktuellen Upload wird pausiert"
         leaveNightMode()
         syncIndexSoon(delay: 0.1)
     }
@@ -475,7 +511,7 @@ final class PhotoBackupManager: ObservableObject {
         persistSession(enabled: true, paused: false, nightMode: nightMode)
         if let currentCandidate { photoExportRetryCount[currentCandidate.resourceKey] = 0 }
         if nightMode { applyNightMode() }
-        statusText = nightMode ? "Night backup resumed" : "Photo backup resumed"
+        statusText = nightMode ? "Nachtsicherung fortgesetzt" : "Fotosicherung fortgesetzt"
         if candidates.isEmpty || lastLibraryScanAt == nil {
             refreshLibrary()
         } else {
@@ -490,7 +526,7 @@ final class PhotoBackupManager: ObservableObject {
         currentFileName = nil
         persistSession(enabled: false, paused: false, nightMode: false)
         leaveNightMode()
-        statusText = "Backup stopped"
+        statusText = "Sicherung gestoppt"
         syncIndexSoon(delay: 0.1)
     }
 
@@ -500,7 +536,7 @@ final class PhotoBackupManager: ObservableObject {
               defaults.bool(forKey: Self.nightModeKey) else { return }
         isNightMode = true
         applyNightMode()
-        if !isRunning { statusText = "Restoring Night Backup…" }
+        if !isRunning { statusText = "Nachtsicherung wird fortgesetzt …" }
     }
 
     func clearFailureHistory() {
@@ -518,7 +554,7 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     func deleteFullyBackedUpAssetsFromPhotos() {
-        let ids = Array(fullyBackedUpAssetIDsCache)
+        let ids = Array(fullyBackedUpAssetIDsCache.intersection(verifiedForDeletionAssetIDs))
         guard !ids.isEmpty else { return }
         let fetch = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
         PHPhotoLibrary.shared().performChanges({
@@ -527,10 +563,10 @@ final class PhotoBackupManager: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 if success {
-                    self.statusText = "Removed \(fetch.count) fully backed-up item(s) from Photos"
+                    self.statusText = "\(fetch.count) gesicherte Medien aus Fotos entfernt"
                     self.refreshLibrary()
                 } else {
-                    self.lastError = error?.localizedDescription ?? "Photos could not delete the selected backed-up items."
+                    self.lastError = error?.localizedDescription ?? "Die gewählten gesicherten Medien konnten nicht gelöscht werden."
                 }
             }
         }
@@ -538,8 +574,11 @@ final class PhotoBackupManager: ObservableObject {
 
     func verifyAndRepairMissingCloudFiles() {
         guard !isVerifying else { return }
+        guard cloud.recoveryReady, !cloud.isRefreshing else { return }
+        verifiedForDeletionAssetIDs = []
+        deletableAssetCount = 0
         isVerifying = true
-        statusText = "Verifying photo backup in Telegram…"
+        statusText = "Fotosicherung in Telegram wird geprüft …"
         let values = records
         verifyRecord(values, index: 0, missingKeys: [])
     }
@@ -555,7 +594,11 @@ final class PhotoBackupManager: ObservableObject {
             persistLocalIndex()
             recalculateCounters()
             isVerifying = false
-            statusText = missingKeys.isEmpty ? "Photo backup verified" : "Found \(missingKeys.count) missing resource(s); they will be uploaded again"
+            if missingKeys.isEmpty {
+                verifiedForDeletionAssetIDs = fullyBackedUpAssetIDsCache
+                deletableAssetCount = verifiedForDeletionAssetIDs.count
+            }
+            statusText = missingKeys.isEmpty ? "Fotosicherung geprüft" : "\(missingKeys.count) fehlende Bestandteile gefunden; bitte vor einem erneuten Upload prüfen"
             if !missingKeys.isEmpty {
                 cloud.syncCatalogNow()
                 syncIndexSoon(delay: 0.3)
@@ -576,7 +619,7 @@ final class PhotoBackupManager: ObservableObject {
             guard let self else { return }
             var missing = missingKeys
             if !valid { missing.insert(record.resourceKey) }
-            self.statusText = "Verifying \(index + 1) / \(values.count)"
+            self.statusText = "Prüfung: \(index + 1) / \(values.count)"
             self.verifyRecord(values, index: index + 1, missingKeys: missing)
         }
     }
@@ -585,7 +628,11 @@ final class PhotoBackupManager: ObservableObject {
         guard index < ids.count else { completion(!ids.isEmpty); return }
         telegram.send(["@type": "getMessage", "chat_id": chatID, "message_id": ids[index]]) { [weak self] response in
             guard let self else { return }
-            if response["@type"] as? String == "error" { completion(false); return }
+            if response["@type"] as? String == "error" {
+                self.isVerifying = false
+                self.lastError = "Die Telegram-Prüfung wurde unterbrochen. Vorhandene Sicherungen bleiben unverändert. Bitte später erneut prüfen."
+                return
+            }
             self.verifyMessageIDs(ids, at: index + 1, chatID: chatID, completion: completion)
         }
     }
@@ -593,32 +640,32 @@ final class PhotoBackupManager: ObservableObject {
     private func processNextIfPossible() {
         guard isRunning, !isPaused, currentCandidate == nil, currentQueueItemID == nil else { return }
         guard !isExportingFromPhotos else { return }
-        guard remoteIndexReady else {
-            statusText = "Restoring the Telegram photo index…"
+        guard remoteIndexReady, cloud.recoveryReady else {
+            statusText = "Telegram-Fotokatalog wird wiederhergestellt …"
             return
         }
         guard !isScanningLibrary else {
-            statusText = "Scanning Photos library in background…"
+            statusText = "Mediathek wird durchsucht …"
             return
         }
         if isNightMode { applyNightMode() }
 
         let folderID = ensureBackupFolder()
         if let failedPhoto = queue.items.first(where: {
-            $0.state == .failed && $0.photoBackup != nil && recordsByKey[$0.photoBackup!.resourceKey] == nil
+            $0.state == .failed && matchesDestination($0) && recordsByKey[$0.photoBackup!.resourceKey] == nil
         }) {
             scheduleAutomaticRetry(failedPhoto)
             return
         }
-        if queue.items.contains(where: { $0.folderID == folderID && ($0.state == .queued || $0.state == .uploading) }) {
-            statusText = "Waiting for the Telegram upload queue…"
+        if queue.items.contains(where: { $0.folderID == folderID && matchesDestination($0) && ($0.state == .queued || $0.state == .uploading) }) {
+            statusText = "Warten auf die Upload-Warteschlange …"
             return
         }
 
         reconcileRecordsWithCloudIndex()
         guard let next = nextPendingCandidate() else {
             if !deferredCandidateKeys.isEmpty {
-                statusText = "Waiting to retry \(deferredCandidateKeys.count) deferred item(s)…"
+                statusText = "\(deferredCandidateKeys.count) Medien warten auf einen erneuten Versuch …"
                 return
             }
             isRunning = false
@@ -626,7 +673,7 @@ final class PhotoBackupManager: ObservableObject {
             currentFileName = nil
             persistSession(enabled: true, paused: false, nightMode: false)
             leaveNightMode()
-            statusText = "Photo backup is complete"
+            statusText = "Fotosicherung abgeschlossen"
             syncIndexSoon(delay: 0.1)
             recalculateCounters()
             return
@@ -653,7 +700,7 @@ final class PhotoBackupManager: ObservableObject {
     private func exportToQueue(_ candidate: PhotoBackupCandidate, folderID: UUID) {
         let generation = backupRunGeneration
         if let existing = queue.items.first(where: {
-            $0.photoBackup?.resourceKey == candidate.resourceKey
+            $0.photoBackup?.resourceKey == candidate.resourceKey && matchesDestination($0)
         }) {
             currentCandidate = candidate
             currentFileName = candidate.fileName
@@ -670,8 +717,8 @@ final class PhotoBackupManager: ObservableObject {
             currentFileName = nil
             deferCandidateAfterFailure(
                 candidate,
-                stage: "Photos lookup",
-                message: "The Photos item is temporarily unavailable.",
+                stage: "Medienzugriff",
+                message: "Das Foto oder Video ist vorübergehend nicht verfügbar.",
                 attempt: 1,
                 baseDelay: 300
             )
@@ -680,7 +727,7 @@ final class PhotoBackupManager: ObservableObject {
 
         isExportingFromPhotos = true
         iCloudProgress = 0
-        statusText = "Preparing \(candidate.fileName) from Photos…"
+        statusText = "„\(candidate.fileName)“ wird aus Fotos vorbereitet …"
 
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("TGSpeicherPhotoBackup", isDirectory: true)
@@ -692,7 +739,7 @@ final class PhotoBackupManager: ObservableObject {
             scheduleInfrastructureRetry(
                 candidate,
                 folderID: folderID,
-                stage: "Temporary storage",
+                stage: "Temporärer Speicher",
                 message: error.localizedDescription
             )
             return
@@ -706,7 +753,7 @@ final class PhotoBackupManager: ObservableObject {
             DispatchQueue.main.async {
                 guard let self, self.backupRunGeneration == generation else { return }
                 self.iCloudProgress = progress
-                self.statusText = progress < 1 ? "Downloading original from iCloud • \(Int(progress * 100))%" : "Preparing Telegram upload…"
+                self.statusText = progress < 1 ? "Original aus iCloud laden • \(Int(progress * 100)) %" : "Telegram-Upload wird vorbereitet …"
             }
         }
 
@@ -732,7 +779,7 @@ final class PhotoBackupManager: ObservableObject {
                     self.photoExportRetryCount[candidate.resourceKey] = attempt
                     if self.isRunning, !self.isPaused, attempt <= 5 {
                         let delay = min(60.0, pow(2.0, Double(attempt)))
-                        self.statusText = "iCloud download interrupted • retrying in \(Int(delay))s"
+                        self.statusText = "iCloud-Download unterbrochen • erneuter Versuch in \(Int(delay)) s"
                         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                             guard let self, self.isRunning, !self.isPaused,
                                   self.currentCandidate?.resourceKey == candidate.resourceKey else { return }
@@ -743,7 +790,7 @@ final class PhotoBackupManager: ObservableObject {
                         self.currentFileName = nil
                         self.deferCandidateAfterFailure(
                             candidate,
-                            stage: "iCloud download",
+                            stage: "iCloud-Download",
                             message: error.localizedDescription,
                             attempt: attempt,
                             baseDelay: 300
@@ -754,15 +801,15 @@ final class PhotoBackupManager: ObservableObject {
                 self.photoExportRetryCount[candidate.resourceKey] = nil
                 guard let chatID = self.selectedDestinationID ?? self.telegram.savedMessagesChatID else {
                     self.scheduleInfrastructureRetry(
-                        candidate, folderID: folderID, stage: "Backup destination",
-                        message: "The selected Telegram channel is unavailable."
+                        candidate, folderID: folderID, stage: "Sicherungsziel",
+                        message: "Der gewählte Telegram-Kanal ist nicht verfügbar."
                     )
                     return
                 }
                 self.isExportingFromPhotos = true
                 self.statusText = candidate.mediaKind == "photo"
-                    ? "Optimizing photo for Telegram…"
-                    : "Preparing streamable Telegram video…"
+                    ? "Foto wird für Telegram vorbereitet …"
+                    : "Telegram-Video wird vorbereitet …"
                 self.libraryScanQueue.async { [weak self] in
                     guard let self else { return }
                     do {
@@ -771,7 +818,7 @@ final class PhotoBackupManager: ObservableObject {
                             guard let self else { return }
                             self.isExportingFromPhotos = false
                             self.currentExportURL = prepared.url
-                            self.statusText = "Queued for Telegram upload"
+                            self.statusText = "Für den Telegram-Upload eingereiht"
                             var metadata = candidate.queueMetadata(destinationChatID: chatID)
                             metadata.nativeMedia?.width = prepared.width
                             metadata.nativeMedia?.height = prepared.height
@@ -786,7 +833,7 @@ final class PhotoBackupManager: ObservableObject {
                             guard let self else { return }
                             self.isExportingFromPhotos = false
                             self.scheduleInfrastructureRetry(
-                                candidate, folderID: folderID, stage: "Media preparation",
+                                candidate, folderID: folderID, stage: "Medienvorbereitung",
                                 message: error.localizedDescription
                             )
                         }
@@ -804,7 +851,7 @@ final class PhotoBackupManager: ObservableObject {
             return (sourceURL, candidate.pixelWidth, candidate.pixelHeight)
         }
         guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil) else {
-            throw NSError(domain: "TGSpeicher.Photos", code: 20, userInfo: [NSLocalizedDescriptionKey: "The photo could not be decoded."])
+            throw NSError(domain: "TGSpeicher.Photos", code: 20, userInfo: [NSLocalizedDescriptionKey: "Das Foto konnte nicht gelesen werden."])
         }
         let maxPixel = 4_096
         let options: [CFString: Any] = [
@@ -814,7 +861,7 @@ final class PhotoBackupManager: ObservableObject {
             kCGImageSourceShouldCacheImmediately: false
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            throw NSError(domain: "TGSpeicher.Photos", code: 21, userInfo: [NSLocalizedDescriptionKey: "Telegram photo conversion failed."])
+            throw NSError(domain: "TGSpeicher.Photos", code: 21, userInfo: [NSLocalizedDescriptionKey: "Das Foto konnte nicht für Telegram umgewandelt werden."])
         }
         let output = sourceURL.deletingLastPathComponent()
             .appendingPathComponent("TelegramPhoto-\(UUID().uuidString).jpg")
@@ -830,10 +877,18 @@ final class PhotoBackupManager: ObservableObject {
                 return (output, image.width, image.height)
             }
         }
-        throw NSError(domain: "TGSpeicher.Photos", code: 22, userInfo: [NSLocalizedDescriptionKey: "The optimized Telegram photo still exceeds 10 MB."])
+        throw NSError(domain: "TGSpeicher.Photos", code: 22, userInfo: [NSLocalizedDescriptionKey: "Das vorbereitete Foto ist weiterhin größer als 10 MB."])
+    }
+
+    private func matchesDestination(_ item: QueuedUpload) -> Bool {
+        item.photoBackup != nil &&
+            (item.photoBackup?.destinationChatID ?? telegram.savedMessagesChatID) == (selectedDestinationID ?? telegram.savedMessagesChatID) &&
+            (item.accountID == nil || item.accountID == telegram.savedMessagesChatID)
     }
 
     private func handleQueue(_ items: [QueuedUpload]) {
+        guard cloud.recoveryReady else { return }
+        let items = items.filter { matchesDestination($0) }
         if let completed = items.first(where: { $0.state == .completed && $0.photoBackup != nil }) {
             if let key = completed.photoBackup?.resourceKey, recordsByKey[key] != nil {
                 queue.remove(completed)
@@ -849,7 +904,7 @@ final class PhotoBackupManager: ObservableObject {
         }
 
         if currentQueueItemID == nil,
-           let item = items.first(where: { $0.photoBackup?.resourceKey == candidate.resourceKey }) {
+           let item = items.first(where: { $0.photoBackup?.resourceKey == candidate.resourceKey && matchesDestination($0) }) {
             currentQueueItemID = item.id
             if let currentExportURL {
                 try? FileManager.default.removeItem(at: currentExportURL.deletingLastPathComponent())
@@ -864,9 +919,9 @@ final class PhotoBackupManager: ObservableObject {
         case .failed:
             scheduleAutomaticRetry(item)
         case .queued:
-            statusText = "Waiting in Telegram upload queue"
+            statusText = "Wartet in der Telegram-Warteschlange"
         case .uploading:
-            statusText = "Uploading \(candidate.fileName) to Telegram"
+            statusText = "„\(candidate.fileName)“ wird zu Telegram hochgeladen"
         }
     }
 
@@ -909,7 +964,7 @@ final class PhotoBackupManager: ObservableObject {
         }
         iCloudProgress = 0
         queue.remove(queueItem)
-        statusText = "Backed up \(backedUpAssets) / \(totalAssets) library items"
+        statusText = "\(backedUpAssets) / \(totalAssets) Medien gesichert"
         DispatchQueue.main.async { [weak self] in self?.processNextIfPossible() }
     }
 
@@ -938,7 +993,7 @@ final class PhotoBackupManager: ObservableObject {
         // quietly. Only a terminal failure after all retries interrupts the user.
         cloud.lastError = nil
         let delay = min(60.0, pow(2.0, Double(attempts + 1)))
-        statusText = "Telegram upload interrupted • retrying in \(Int(delay))s"
+        statusText = "Telegram-Upload unterbrochen • erneuter Versuch in \(Int(delay)) s"
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.scheduledRetryIDs.remove(item.id)
@@ -962,8 +1017,8 @@ final class PhotoBackupManager: ObservableObject {
             pixelHeight: metadata.nativeMedia?.height ?? 0,
             duration: metadata.nativeMedia?.duration ?? 0
         )
-        let message = item.lastError ?? "Telegram upload failed repeatedly."
-        let stage = FileManager.default.fileExists(atPath: item.localPath) ? "Telegram upload" : "Queue recovery"
+        let message = item.lastError ?? "Der Telegram-Upload ist wiederholt fehlgeschlagen."
+        let stage = FileManager.default.fileExists(atPath: item.localPath) ? "Telegram-Upload" : "Warteschlangen-Wiederherstellung"
         if currentQueueItemID == item.id {
             currentQueueItemID = nil
             currentCandidate = nil
@@ -993,7 +1048,7 @@ final class PhotoBackupManager: ObservableObject {
         guard deferredCandidateKeys.insert(candidate.resourceKey).inserted else { return }
 
         let delay = min(3_600.0, baseDelay * pow(2.0, Double(min(cycle - 1, 4))))
-        statusText = "Skipped \(candidate.fileName) for now • retrying later"
+        statusText = "„\(candidate.fileName)“ vorerst übersprungen • späterer Versuch folgt"
         DispatchQueue.main.async { [weak self] in self?.processNextIfPossible() }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
@@ -1001,7 +1056,7 @@ final class PhotoBackupManager: ObservableObject {
             guard self.isRunning, !self.isPaused,
                   self.recordsByKey[candidate.resourceKey] == nil else { return }
             self.pendingCandidates.append(candidate)
-            self.statusText = "Retrying deferred item \(candidate.fileName)"
+            self.statusText = "Erneuter Versuch für „\(candidate.fileName)“"
             self.processNextIfPossible()
         }
     }
@@ -1017,7 +1072,7 @@ final class PhotoBackupManager: ObservableObject {
         recordFailure(stage: stage, candidate: candidate, message: message, attempt: attempt)
         guard infrastructureRetryKeys.insert(candidate.resourceKey).inserted else { return }
         let delay = min(300.0, max(30.0, pow(2.0, Double(min(attempt, 7)))))
-        statusText = "Storage temporarily unavailable • retrying in \(Int(delay))s"
+        statusText = "Speicher vorübergehend nicht verfügbar • erneuter Versuch in \(Int(delay)) s"
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.infrastructureRetryKeys.remove(candidate.resourceKey)
@@ -1076,22 +1131,34 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     private func ensureBackupFolder() -> UUID {
-        if let folder = cloud.index.folders.first(where: { $0.parentID == nil && $0.name == "Photo Backup" }) { return folder.id }
-        cloud.createFolder(name: "Photo Backup", parentID: nil)
-        return cloud.index.folders.first(where: { $0.parentID == nil && $0.name == "Photo Backup" })!.id
+        if let folder = cloud.index.folders.first(where: { $0.parentID == nil && ["Fotosicherung", "Photo Backup"].contains($0.name) }) { return folder.id }
+        cloud.createFolder(name: "Fotosicherung", parentID: nil)
+        return cloud.index.folders.first(where: { $0.parentID == nil && ["Fotosicherung", "Photo Backup"].contains($0.name) })?.id
+            ?? CatalogCodec.stableMediaID(hash: "photo-backup-folder", chatID: selectedDestinationID ?? 0)
     }
 
     private func reconcileRecordsWithCloudIndex() {
-        let cloudIDs = Set(cloud.index.files.map(\.id))
-        let stale = recordsByKey.values.filter { !cloudIDs.contains($0.cloudFileID) }.map(\.resourceKey)
-        guard !stale.isEmpty, remoteIndexReady else { return }
-        stale.forEach { recordsByKey.removeValue(forKey: $0) }
+        guard remoteIndexReady else { return }
+        let destination = selectedDestinationID ?? telegram.savedMessagesChatID
+        let files = cloud.index.files.filter { $0.isComplete && ($0.telegramChatID ?? telegram.savedMessagesChatID) == destination }
+        let cloudIDs = Set(files.map(\.id))
+        recordsByKey = recordsByKey.filter { cloudIDs.contains($0.value.cloudFileID) }
+        for file in files {
+            guard let key = file.sourceKey, recordsByKey[key] == nil else { continue }
+            let parts = key.split(separator: "|", maxSplits: 2).map(String.init)
+            guard parts.count == 3, let resourceType = Int(parts[1]) else { continue }
+            recordsByKey[key] = PhotoBackupRecord(resourceKey: key, assetLocalIdentifier: parts[0],
+                resourceTypeRawValue: resourceType, fileName: parts[2],
+                mediaKind: file.storageKind == "nativeVideo" || file.isTGVideo ? "video" : "photo",
+                cloudFileID: file.id, creationDate: file.createdAt, uploadedAt: file.modifiedAt)
+        }
         persistLocalIndex()
         recalculateCounters()
     }
 
     private func recalculateCounters() {
-        let cloudIDs = Set(cloud.index.files.map(\.id))
+        let destination = selectedDestinationID ?? telegram.savedMessagesChatID
+        let cloudIDs = Set(cloud.index.files.filter { ($0.telegramChatID ?? telegram.savedMessagesChatID) == destination && $0.isComplete }.map(\.id))
         var requiredCounts: [String: Int] = [:]
         var backedCounts: [String: Int] = [:]
         var newPending: [PhotoBackupCandidate] = []
@@ -1118,7 +1185,7 @@ final class PhotoBackupManager: ObservableObject {
         pendingResources = newPending.count
         backedUpResources = max(0, totalResources - pendingResources)
         backedUpAssets = completeAssets.count
-        deletableAssetCount = completeAssets.count
+        deletableAssetCount = completeAssets.intersection(verifiedForDeletionAssetIDs).count
     }
 
     private func updateCountersAfterCompleted(_ record: PhotoBackupRecord) {
@@ -1155,7 +1222,7 @@ final class PhotoBackupManager: ObservableObject {
         if let url = localIndexURL,
            let data = try? Data(contentsOf: url),
            let snapshot = try? JSONDecoder().decode(PhotoBackupSnapshot.self, from: data) {
-            recordsByKey = Dictionary(uniqueKeysWithValues: snapshot.records.map { ($0.resourceKey, $0) })
+            recordsByKey = Dictionary(snapshot.records.map { ($0.resourceKey, $0) }, uniquingKeysWith: { a, b in a.uploadedAt >= b.uploadedAt ? a : b })
         }
         if let journalURL = localJournalURL, let data = try? Data(contentsOf: journalURL) {
             for line in data.split(separator: 0x0A) {
@@ -1208,7 +1275,7 @@ final class PhotoBackupManager: ObservableObject {
     private func captureOperationalError(_ message: String, stage: String) {
         guard isRunning, !isPaused else { return }
         recordFailure(stage: stage, candidate: currentCandidate, message: message, attempt: 1)
-        if stage == "Upload queue" {
+        if stage == "Upload-Warteschlange" {
             queue.lastError = nil
             if let candidate = currentCandidate,
                currentQueueItemID == nil,
@@ -1220,7 +1287,7 @@ final class PhotoBackupManager: ObservableObject {
                     message: message
                 )
             }
-        } else if stage == "Telegram upload" {
+        } else if stage == "Telegram-Upload" {
             cloud.lastError = nil
         } else if stage == "Telegram" {
             telegram.clearError()
@@ -1286,219 +1353,13 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     private func syncIndexNow() {
-        guard let chatID = selectedDestinationID ?? telegram.savedMessagesChatID else { return }
-        guard cloud.upload == nil else { syncIndexSoon(delay: 4); return }
-
-        let fileIDs = Set(recordsByKey.values.map(\.cloudFileID))
-        let snapshot = PhotoBackupSnapshot(
-            revision: Int64(Date().timeIntervalSince1970),
-            updatedAt: Date(),
-            records: Array(recordsByKey.values),
-            files: cloud.index.files.filter { fileIDs.contains($0.id) }
-        )
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("TGSpeicher-Photo-Backup-Index-\(UUID().uuidString).json")
-        indexIOQueue.async {
-            guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            do { try data.write(to: url, options: [.atomic]) } catch { return }
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                guard self.cloud.upload == nil else {
-                    try? FileManager.default.removeItem(at: url)
-                    self.syncIndexSoon(delay: 4)
-                    return
-                }
-                let request: [String: Any] = [
-                    "@type": "sendMessage",
-                    "chat_id": chatID,
-                    "topic_id": NSNull(),
-                    "reply_to": NSNull(),
-                    "options": NSNull(),
-                    "reply_markup": NSNull(),
-                    "input_message_content": [
-                        "@type": "inputMessageDocument",
-                        "document": ["@type": "inputFileLocal", "path": url.path],
-                        "thumbnail": NSNull(),
-                        "disable_content_type_detection": true,
-                        "caption": ["@type": "formattedText", "text": Self.marker, "entities": []]
-                    ]
-                ]
-
-                self.telegram.sendMessageAwaitingFinal(request) { [weak self] response in
-                    try? FileManager.default.removeItem(at: url)
-                    guard let self else { return }
-                    guard response["@type"] as? String != "error", let newID = TelegramClient.int64(response["id"]) else { return }
-                    let old = self.snapshotMessageID
-                    self.snapshotMessageID = newID
-                    self.defaults.set(newID, forKey: "photos.snapshotMessageID")
-                    if let old, old != newID {
-                        self.telegram.send(["@type": "deleteMessages", "chat_id": chatID, "message_ids": [old], "revoke": true])
-                    }
-                }
-            }
-        }
+        guard cloud.recoveryReady else { return }
+        cloud.syncCatalogNow()
     }
 
     private func restoreRemoteIndex() {
-        guard let chatID = selectedDestinationID ?? telegram.savedMessagesChatID else { return }
-        telegram.send([
-            "@type": "searchChatMessages",
-            "chat_id": chatID,
-            "topic_id": NSNull(),
-            "query": Self.marker,
-            "sender_id": NSNull(),
-            "from_message_id": 0,
-            "offset": 0,
-            "limit": 10,
-            "filter": NSNull()
-        ]) { [weak self] response in
-            guard let self else { return }
-            guard response["@type"] as? String != "error" else {
-                self.remoteIndexReady = true
-                self.refreshAfterRemoteIndexReady()
-                return
-            }
-            let messages = response["messages"] as? [[String: Any]] ?? []
-            guard let message = messages.first(where: { self.documentFileID(from: $0) != nil }),
-                  let messageID = TelegramClient.int64(message["id"]),
-                  let fileID = self.documentFileID(from: message) else {
-                self.restoreNativeMediaGap(chatID: chatID, fromMessageID: 0, newerThan: .distantPast)
-                return
-            }
-            self.snapshotMessageID = messageID
-            self.defaults.set(messageID, forKey: "photos.snapshotMessageID")
-            self.telegram.send([
-                "@type": "downloadFile", "file_id": fileID, "priority": 32, "offset": 0, "limit": 0, "synchronous": true
-            ]) { [weak self] file in
-                guard let self else { return }
-                if let local = file["local"] as? [String: Any], let path = local["path"] as? String,
-                   let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-                   let snapshot = try? JSONDecoder().decode(PhotoBackupSnapshot.self, from: data) {
-                    var restoredFiles = snapshot.files ?? []
-                    for fileIndex in restoredFiles.indices {
-                        for chunkIndex in restoredFiles[fileIndex].chunks.indices {
-                            restoredFiles[fileIndex].chunks[chunkIndex].telegramFileID = nil
-                        }
-                    }
-                    self.cloud.mergeRecoveredPhotoFiles(restoredFiles)
-                    for record in snapshot.records {
-                        if let existing = self.recordsByKey[record.resourceKey], existing.uploadedAt > record.uploadedAt { continue }
-                        self.recordsByKey[record.resourceKey] = record
-                    }
-                    self.persistLocalIndex()
-                    self.restoreNativeMediaGap(chatID: chatID, fromMessageID: 0, newerThan: snapshot.updatedAt)
-                    return
-                }
-                self.restoreNativeMediaGap(chatID: chatID, fromMessageID: 0, newerThan: .distantPast)
-            }
-        }
-    }
-
-    private func restoreNativeMediaGap(chatID: Int64, fromMessageID: Int64, newerThan cutoff: Date) {
-        telegram.send([
-            "@type": "searchChatMessages", "chat_id": chatID, "topic_id": NSNull(),
-            "query": TGManifest.markerV2, "sender_id": NSNull(),
-            "from_message_id": fromMessageID, "offset": 0, "limit": 100, "filter": NSNull()
-        ]) { [weak self] response in
-            guard let self else { return }
-            guard response["@type"] as? String != "error" else {
-                self.remoteIndexReady = true
-                self.refreshAfterRemoteIndexReady()
-                return
-            }
-            let messages = response["messages"] as? [[String: Any]] ?? []
-            var reachedSnapshot = false
-            var recoveredFiles: [CloudFileEntry] = []
-            for message in messages {
-                let date = Date(timeIntervalSince1970: TimeInterval(TelegramClient.int64(message["date"]) ?? 0))
-                if date <= cutoff { reachedSnapshot = true; continue }
-                if let recovered = self.recoverNativeMediaMessage(message, chatID: chatID) {
-                    recoveredFiles.append(recovered)
-                }
-            }
-            self.cloud.mergeRecoveredPhotoFiles(recoveredFiles)
-            let next = TelegramClient.int64(response["next_from_message_id"]) ?? 0
-            if !reachedSnapshot, next != 0, !messages.isEmpty {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                    self?.restoreNativeMediaGap(chatID: chatID, fromMessageID: next, newerThan: cutoff)
-                }
-            } else {
-                self.persistLocalIndex()
-                self.remoteIndexReady = true
-                self.refreshAfterRemoteIndexReady()
-            }
-        }
-    }
-
-    private func recoverNativeMediaMessage(_ message: [String: Any], chatID: Int64) -> CloudFileEntry? {
-        guard let content = message["content"] as? [String: Any],
-              let contentType = content["@type"] as? String,
-              contentType == "messagePhoto" || contentType == "messageVideo",
-              let caption = content["caption"] as? [String: Any],
-              let text = caption["text"] as? String,
-              let manifest = decodePhotoManifest(text),
-              manifest.kind == "nativePhoto" || manifest.kind == "nativeVideo",
-              let fileID = manifest.fileID,
-              let sourceKey = manifest.sourceKey,
-              let assetID = manifest.assetLocalIdentifier,
-              let resourceType = manifest.resourceTypeRawValue,
-              let messageID = TelegramClient.int64(message["id"]) else { return nil }
-
-        let info = nativeFileInfo(content: content)
-        let mediaKind = manifest.mediaKind ?? (contentType == "messageVideo" ? "video" : "photo")
-        let entry = CloudFileEntry(
-            id: fileID, name: manifest.name, folderID: manifest.folderID,
-            totalSize: info.size, createdAt: manifest.mediaCreationDate ?? manifest.createdAt,
-            modifiedAt: manifest.createdAt,
-            chunks: [CloudChunk(index: 1, count: 1, telegramMessageID: messageID,
-                telegramFileID: info.fileID, remoteUniqueID: info.uniqueID,
-                size: info.size, storedName: manifest.name)],
-            mimeType: mediaKind == "video" ? "video/mp4" : "image/jpeg",
-            tagIDs: manifest.tagIDs ?? [], sha256: nil, sourceKey: sourceKey,
-            telegramChatID: chatID,
-            storageKind: mediaKind == "video" ? "nativeVideo" : "nativePhoto"
-        )
-        let record = PhotoBackupRecord(
-            resourceKey: sourceKey, assetLocalIdentifier: assetID,
-            resourceTypeRawValue: resourceType, fileName: manifest.name,
-            mediaKind: mediaKind, cloudFileID: fileID,
-            creationDate: manifest.mediaCreationDate, uploadedAt: manifest.createdAt
-        )
-        let existingDate = recordsByKey[sourceKey]?.uploadedAt ?? .distantPast
-        if existingDate < record.uploadedAt {
-            recordsByKey[sourceKey] = record
-        }
-        return entry
-    }
-
-    private func decodePhotoManifest(_ text: String) -> TGManifest? {
-        guard let range = text.range(of: TGManifest.markerV2) else { return nil }
-        let payload = text[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = Data(base64Encoded: payload) else { return nil }
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(TGManifest.self, from: data)
-    }
-
-    private func nativeFileInfo(content: [String: Any]) -> (fileID: Int?, uniqueID: String?, size: Int64) {
-        let file: [String: Any]?
-        if content["@type"] as? String == "messageVideo" {
-            file = ((content["video"] as? [String: Any])?["video"] as? [String: Any])
-        } else {
-            let sizes = ((content["photo"] as? [String: Any])?["sizes"] as? [[String: Any]]) ?? []
-            file = sizes.compactMap { $0["photo"] as? [String: Any] }.max {
-                (TelegramClient.int64($0["size"]) ?? 0) < (TelegramClient.int64($1["size"]) ?? 0)
-            }
-        }
-        guard let file else { return (nil, nil, 0) }
-        return (TelegramClient.int(file["id"]), (file["remote"] as? [String: Any])?["unique_id"] as? String,
-            TelegramClient.int64(file["size"]) ?? TelegramClient.int64(file["expected_size"]) ?? 0)
-    }
-
-    private func documentFileID(from message: [String: Any]) -> Int? {
-        guard let content = message["content"] as? [String: Any],
-              let document = content["document"] as? [String: Any],
-              let file = document["document"] as? [String: Any] else { return nil }
-        return TelegramClient.int(file["id"])
+        remoteIndexReady = cloud.recoveryReady
+        if remoteIndexReady { refreshAfterRemoteIndexReady() }
     }
 
     private func maybeAutoStart() {
@@ -1510,12 +1371,12 @@ final class PhotoBackupManager: ObservableObject {
               !isRunning, !isScanningLibrary, lastLibraryScanAt != nil else { return }
 
         let hasQueuedPhoto = queue.items.contains {
-            $0.photoBackup != nil && ($0.state == .queued || $0.state == .uploading || $0.state == .failed)
+            matchesDestination($0) && ($0.state == .queued || $0.state == .uploading || $0.state == .failed)
         }
         guard pendingResources > 0 || hasQueuedPhoto else {
             persistSession(enabled: true, paused: false, nightMode: false)
             leaveNightMode()
-            statusText = "Photos library is fully backed up"
+            statusText = "Mediathek vollständig gesichert"
             return
         }
         startBackup(nightMode: requestedNightMode)
@@ -1574,3 +1435,4 @@ final class PhotoBackupManager: ObservableObject {
         }
     }
 }
+

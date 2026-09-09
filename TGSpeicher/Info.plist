@@ -3,7 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
+    <string>de</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>de</string></array>
     <key>CFBundleDisplayName</key>
     <string>TGSpeicher</string>
     <key>CFBundleExecutable</key>
@@ -23,9 +25,9 @@
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>TGSpeicher needs access to your Photos library to back up your photos, videos and Live Photo resources to your own Telegram cloud and to optionally remove fully backed-up originals when you explicitly request it.</string>
+    <string>TGSpeicher benötigt Zugriff auf deine Mediathek, um Fotos, Videos und Live Photos in deinem Telegram-Kanal zu sichern. Gesicherte Originale werden nur auf deinen ausdrücklichen Wunsch vom iPhone entfernt.</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
-    <string>TGSpeicher may use Photos access when managing media you explicitly choose to restore or manage.</string>
+    <string>TGSpeicher verwendet den Fotozugriff zum Wiederherstellen und Verwalten der von dir ausgewählten Medien.</string>
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
@@ -49,3 +51,4 @@
     </array>
 </dict>
 </plist>
+

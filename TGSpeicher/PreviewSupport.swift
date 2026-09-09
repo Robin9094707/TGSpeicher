@@ -41,7 +41,7 @@ struct QuickLookPreviewSheet: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { dismiss() } label: { Image(systemName: "xmark.circle.fill") }
-                            .accessibilityLabel("Close preview")
+                            .accessibilityLabel("Vorschau schließen")
                     }
                 }
         }
@@ -108,16 +108,16 @@ struct LocalDownloadsView: View {
     var body: some View {
         List {
             Section {
-                LabeledContent("Offline files", value: "\(files.count)")
-                LabeledContent("Disk usage", value: TGLocalDownloads.totalBytes().byteCountString)
+                LabeledContent("Offline-Dateien", value: "\(files.count)")
+                LabeledContent("Speicherbelegung", value: TGLocalDownloads.totalBytes().byteCountString)
             }
 
-            Section("Downloaded files") {
+            Section("Heruntergeladene Dateien") {
                 if files.isEmpty {
                     ContentUnavailableView(
-                        "No offline downloads",
+                        "Keine Offline-Dateien",
                         systemImage: "arrow.down.circle",
-                        description: Text("Downloaded Telegram files appear here and in the Files app.")
+                        description: Text("Heruntergeladene Telegram-Dateien findest du hier und in der Dateien-App.")
                     )
                 } else {
                     ForEach(files, id: \.self) { url in
@@ -139,7 +139,7 @@ struct LocalDownloadsView: View {
                                 try? FileManager.default.removeItem(at: url)
                                 reload()
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label("Löschen", systemImage: "trash")
                             }
                         }
                     }
@@ -148,13 +148,13 @@ struct LocalDownloadsView: View {
 
             if !files.isEmpty {
                 Section {
-                    Button("Clear offline downloads", systemImage: "trash", role: .destructive) {
+                    Button("Offline-Dateien löschen", systemImage: "trash", role: .destructive) {
                         confirmClear = true
                     }
                 }
             }
         }
-        .navigationTitle("Offline Files")
+        .navigationTitle("Offline-Dateien")
         .onAppear(perform: reload)
         .refreshable { reload() }
         .sheet(isPresented: Binding(
@@ -163,14 +163,15 @@ struct LocalDownloadsView: View {
         )) {
             if let previewURL { QuickLookPreviewSheet(url: previewURL) }
         }
-        .confirmationDialog("Delete every offline download?", isPresented: $confirmClear, titleVisibility: .visible) {
-            Button("Clear Downloads", role: .destructive) {
+        .confirmationDialog("Alle Offline-Dateien löschen?", isPresented: $confirmClear, titleVisibility: .visible) {
+            Button("Downloads löschen", role: .destructive) {
                 try? TGLocalDownloads.clear()
                 reload()
             }
-            Button("Cancel", role: .cancel) { }
+            Button("Abbrechen", role: .cancel) { }
         }
     }
 
     private func reload() { files = TGLocalDownloads.allFiles() }
 }
+

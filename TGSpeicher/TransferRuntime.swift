@@ -24,8 +24,9 @@ final class TransferRuntime: ObservableObject {
                 let previous = self.previousUpload
                 self.previousUpload = upload
                 self.refreshRuntimeProtection()
-                if finishedUpload, let previous, self.cloud.lastError == nil {
-                    self.notify(title: "Upload complete", body: previous.fileName)
+                if finishedUpload, let previous, self.cloud.lastUploadFailure == nil,
+                   self.cloud.index.files.contains(where: { $0.id == previous.id && $0.isComplete }) {
+                    self.notify(title: "Upload abgeschlossen", body: previous.fileName)
                 }
             }
             .store(in: &cancellables)
@@ -38,7 +39,7 @@ final class TransferRuntime: ObservableObject {
                 self.wasDownloading = downloading
                 self.refreshRuntimeProtection()
                 if finished, let url = self.cloud.lastExportURL, self.cloud.lastError == nil {
-                    self.notify(title: "Download ready", body: url.lastPathComponent)
+                    self.notify(title: "Download bereit", body: url.lastPathComponent)
                 }
             }
             .store(in: &cancellables)
@@ -79,3 +80,4 @@ final class TransferRuntime: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
 }
+

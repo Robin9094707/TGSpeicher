@@ -13,57 +13,54 @@ struct SettingsV2: View {
     @State private var confirmReset = false
     var body: some View {
         Form {
-            Section("Appearance") {
-                Picker("Appearance", selection: $preferences.appearance) { ForEach(TGAppearance.allCases) { Text($0.label).tag($0) } }
-                Picker("Default file view", selection: $preferences.driveViewMode) { ForEach(TGDriveViewMode.allCases) { Label($0.label, systemImage: $0.icon).tag($0) } }
-                Picker("Default sort", selection: $preferences.sortMode) { ForEach(TGDriveSortMode.allCases) { Text($0.label).tag($0) } }
+            Section("Darstellung") {
+                Picker("Darstellung", selection: $preferences.appearance) { ForEach(TGAppearance.allCases) { Text($0.label).tag($0) } }
+                Picker("Standardansicht", selection: $preferences.driveViewMode) { ForEach(TGDriveViewMode.allCases) { Label($0.label, systemImage: $0.icon).tag($0) } }
+                Picker("Standardsortierung", selection: $preferences.sortMode) { ForEach(TGDriveSortMode.allCases) { Text($0.label).tag($0) } }
                 if preferences.driveViewMode == .grid { Slider(value: $preferences.gridScale, in: 0.5...2.0) }
-                Toggle("Haptic feedback", isOn: $preferences.hapticsEnabled)
+                Toggle("Haptisches Feedback", isOn: $preferences.hapticsEnabled)
             }
-            Section("Transfers") {
-                Toggle("Transfer notifications", isOn: $preferences.transferNotifications)
-                Toggle("Keep screen awake during transfers", isOn: $preferences.keepScreenAwakeDuringTransfers)
-                Toggle("Wi‑Fi only uploads", isOn: $preferences.wifiOnlyUploads)
-                Button("Allow notifications", systemImage: "bell.badge") { runtime.requestNotificationPermission() }
-                NavigationLink("Offline downloads", destination: LocalDownloadsView())
-                LabeledContent("Queued uploads", value: "\(queue.queuedCount)")
+            Section("Übertragungen") {
+                Toggle("Mitteilungen zu Übertragungen", isOn: $preferences.transferNotifications)
+                Toggle("Bildschirm bei Übertragungen eingeschaltet lassen", isOn: $preferences.keepScreenAwakeDuringTransfers)
+                Toggle("Nur über WLAN hochladen", isOn: $preferences.wifiOnlyUploads)
+                Button("Mitteilungen erlauben", systemImage: "bell.badge") { runtime.requestNotificationPermission() }
+                NavigationLink("Offline-Dateien", destination: LocalDownloadsView())
+                LabeledContent("Wartende Uploads", value: "\(queue.queuedCount)")
             }
-            Section("Tags & Organization") { NavigationLink { TagsView(cloud: cloud) } label: { LabeledContent("Manage tags", value: "\(cloud.tags.count)") } }
+            Section("Tags & Organisation") { NavigationLink { TagsView(cloud: cloud) } label: { LabeledContent("Tags verwalten", value: "\(cloud.tags.count)") } }
             Section("Telegram") {
-                LabeledContent("Account", value: telegram.accountName)
-                LabeledContent("Authorization", value: telegram.lastAuthorizationStateName)
-                Button("Log out from Telegram", systemImage: "rectangle.portrait.and.arrow.right") { telegram.logOut() }
+                LabeledContent("Konto", value: telegram.accountName)
+                LabeledContent("Anmeldung", value: telegram.lastAuthorizationStateName)
+                Button("Von Telegram abmelden", systemImage: "rectangle.portrait.and.arrow.right") { telegram.logOut() }
             }
-            Section("Recovery Catalog") {
-                LabeledContent("Status", value: cloud.catalogStatus)
-                LabeledContent("Revision", value: "\(cloud.index.revision)")
-                Button("Sync catalog now", systemImage: "arrow.up.doc.on.clipboard") { cloud.syncCatalogNow() }.disabled(cloud.isCatalogSyncing)
-                Button("Fast restore / refresh", systemImage: "bolt.fill") { cloud.bootstrapFromTelegram() }.disabled(cloud.isRefreshing)
-                Button("Full recovery scan", systemImage: "magnifyingglass") { cloud.fullRebuildFromTelegram() }.disabled(cloud.isRefreshing)
-                TextField("Catalog pointer message ID", text: $recoveryMessageID).keyboardType(.numberPad)
-                Button("Restore from message ID", systemImage: "arrow.down.doc") { cloud.restoreFromCatalogPointer(recoveryMessageID) }.disabled(recoveryMessageID.isEmpty)
+            Section("Datensicherung") {
+                NavigationLink { RecoveryCenterView(cloud: cloud) } label: {
+                    Label("Sichern & Wiederherstellen", systemImage: "checkmark.shield")
+                }
+                Text(cloud.catalogStatus).font(.footnote).foregroundStyle(.secondary)
             }
-            Section("Network") {
-                LabeledContent("Connection", value: network.isConnected ? network.interfaceName : "Offline")
-                NavigationLink { ProxySettingsView(proxy: proxy, telegram: telegram) } label: { LabeledContent("Telegram Proxy", value: proxy.status) }
+            Section("Netzwerk") {
+                LabeledContent("Verbindung", value: network.isConnected ? network.interfaceName : "Offline")
+                NavigationLink { ProxySettingsView(proxy: proxy, telegram: telegram) } label: { LabeledContent("Telegram-Proxy", value: proxy.status) }
             }
-            Section("Apple Files") {
-                Label("On My iPhone › TGSpeicher › Upload Inbox", systemImage: "folder.badge.plus")
-                Label("On My iPhone › TGSpeicher › Downloads", systemImage: "folder.fill")
-                Label("On My iPhone › TGSpeicher › Transfer Queue", systemImage: "tray.full.fill")
-                Button("Open Files app", systemImage: "folder") { if let url = URL(string: "shareddocuments://") { UIApplication.shared.open(url) } }
-                Button("Refresh Upload Inbox", systemImage: "arrow.clockwise") { cloud.refreshLocalInbox() }
+            Section("Dateien-App") {
+                Label("Auf meinem iPhone › TGSpeicher › Upload Inbox", systemImage: "folder.badge.plus")
+                Label("Auf meinem iPhone › TGSpeicher › Downloads", systemImage: "folder.fill")
+                Label("Auf meinem iPhone › TGSpeicher › Transfer Queue", systemImage: "tray.full.fill")
+                Button("Dateien-App öffnen", systemImage: "folder") { if let url = URL(string: "shareddocuments://") { UIApplication.shared.open(url) } }
+                Button("Datei-Eingang aktualisieren", systemImage: "arrow.clockwise") { cloud.refreshLocalInbox() }
             }
-            Section("About TGSpeicher 2") {
+            Section("Über TGSpeicher") {
                 LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0")
-                Text("Native SwiftUI iOS client using TDLib directly on-device.").font(.footnote).foregroundStyle(.secondary)
+                Text("Deine Dateien und Medien direkt in deinem Telegram-Konto.").font(.footnote).foregroundStyle(.secondary)
             }
-            Section("Local Session") { Button("Erase local Telegram login data", systemImage: "trash.fill", role: .destructive) { confirmReset = true } }
+            Section("Lokale Sitzung") { Button("Lokale Telegram-Anmeldedaten löschen", systemImage: "trash.fill", role: .destructive) { confirmReset = true } }
         }
-        .navigationTitle("Settings")
-        .confirmationDialog("Erase local Telegram login data?", isPresented: $confirmReset, titleVisibility: .visible) {
-            Button("Erase Local Telegram Data", role: .destructive) { telegram.resetAPICredentials() }
-            Button("Cancel", role: .cancel) { }
+        .navigationTitle("Einstellungen")
+        .confirmationDialog("Lokale Telegram-Anmeldedaten löschen?", isPresented: $confirmReset, titleVisibility: .visible) {
+            Button("Lokale Telegram-Daten löschen", role: .destructive) { telegram.resetAPICredentials() }
+            Button("Abbrechen", role: .cancel) { }
         }
     }
 }
@@ -74,41 +71,41 @@ struct ProxySettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Use Telegram proxy", isOn: $proxy.enabled)
-                Picker("Type", selection: $proxy.type) { ForEach(TGProxyType.allCases) { Text($0.label).tag($0) } }
+                Toggle("Telegram-Proxy verwenden", isOn: $proxy.enabled)
+                Picker("Typ", selection: $proxy.type) { ForEach(TGProxyType.allCases) { Text($0.label).tag($0) } }
                 TextField("Server", text: $proxy.server).textInputAutocapitalization(.never).autocorrectionDisabled()
                 TextField("Port", text: $proxy.portText).keyboardType(.numberPad)
-                if proxy.type != .mtproto { TextField("Username", text: $proxy.username) }
-                SecureField(proxy.type == .mtproto ? "MTProto secret" : "Password", text: $proxy.secret)
+                if proxy.type != .mtproto { TextField("Benutzername", text: $proxy.username) }
+                SecureField(proxy.type == .mtproto ? "MTProto-Schlüssel" : "Passwort", text: $proxy.secret)
             }
             Section {
-                Button("Apply Proxy", systemImage: "checkmark.circle.fill") { proxy.apply(using: telegram) }
-                Button("Test Proxy", systemImage: "network") { proxy.ping(using: telegram) }.disabled(proxy.activeProxyID == nil)
+                Button("Proxy übernehmen", systemImage: "checkmark.circle.fill") { proxy.apply(using: telegram) }
+                Button("Proxy testen", systemImage: "network") { proxy.ping(using: telegram) }.disabled(proxy.activeProxyID == nil)
                 LabeledContent("Status", value: proxy.status)
             }
-        }.navigationTitle("Telegram Proxy")
+        }.navigationTitle("Telegram-Proxy")
     }
 }
 
 struct NewFolderSheet: View {
     @Binding var name: String; let onCreate: () -> Void; let onCancel: () -> Void
-    var body: some View { NavigationStack { Form { TextField("Folder name", text: $name) }.navigationTitle("New Folder").toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }; ToolbarItem(placement: .confirmationAction) { Button("Create", action: onCreate).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) } } }.presentationDetents([.medium]) }
+    var body: some View { NavigationStack { Form { TextField("Ordnername", text: $name) }.navigationTitle("Neuer Ordner").toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen", action: onCancel) }; ToolbarItem(placement: .confirmationAction) { Button("Erstellen", action: onCreate).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) } } }.presentationDetents([.medium]) }
 }
 
 struct RemoteImportSheet: View {
     let folderID: UUID?; @ObservedObject var queue: UploadQueueManager; @ObservedObject var importer: RemoteURLImporter; let onDismiss: () -> Void; @State private var urlText = ""
-    var body: some View { NavigationStack { Form { Section("Remote URL") { TextField("https://example.com/file.zip", text: $urlText).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled(); Text("Downloads to the iPhone, then uploads through the durable Telegram queue.").font(.footnote).foregroundStyle(.secondary) } }.navigationTitle("Upload from URL").toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close", action: onDismiss) }; ToolbarItem(placement: .confirmationAction) { Button("Queue") { importer.start(urlString: urlText, folderID: folderID, queue: queue); onDismiss() }.disabled(urlText.isEmpty || importer.isRunning) } } }.presentationDetents([.medium, .large]) }
+    var body: some View { NavigationStack { Form { Section("Download-Link") { TextField("https://example.com/file.zip", text: $urlText).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled(); Text("Die Datei wird zuerst aufs iPhone geladen und anschließend über die gespeicherte Warteschlange in Telegram gesichert.").font(.footnote).foregroundStyle(.secondary) } }.navigationTitle("Von einem Link hochladen").toolbar { ToolbarItem(placement: .cancellationAction) { Button("Schließen", action: onDismiss) }; ToolbarItem(placement: .confirmationAction) { Button("Warteschlange") { importer.start(urlString: urlText, folderID: folderID, queue: queue); onDismiss() }.disabled(urlText.isEmpty || importer.isRunning) } } }.presentationDetents([.medium, .large]) }
 }
 
 struct FolderSelectionSheet: View {
     @ObservedObject var cloud: CloudStore; let onSelect: (UUID?) -> Void
-    var body: some View { NavigationStack { List { Button { onSelect(nil) } label: { Label("TG Drive", systemImage: "externaldrive.fill.badge.icloud") }; ForEach(cloud.index.folders.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }) { folder in Button { onSelect(folder.id) } label: { Label(cloud.folderPath(for: folder.id).map(\.name).joined(separator: " / "), systemImage: "folder.fill") } } }.navigationTitle("Move to Folder") }.presentationDetents([.medium, .large]) }
+    var body: some View { NavigationStack { List { Button { onSelect(nil) } label: { Label("Meine Dateien", systemImage: "externaldrive.fill.badge.icloud") }; ForEach(cloud.index.folders.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }) { folder in Button { onSelect(folder.id) } label: { Label(cloud.folderPath(for: folder.id).map(\.name).joined(separator: " / "), systemImage: "folder.fill") } } }.navigationTitle("In Ordner verschieben") }.presentationDetents([.medium, .large]) }
 }
 
 struct TagSelectionSheet: View {
     @ObservedObject var cloud: CloudStore; let onApply: (Set<UUID>) -> Void; @State private var selected: Set<UUID>
     init(cloud: CloudStore, initialSelection: Set<UUID> = [], onApply: @escaping (Set<UUID>) -> Void) { self.cloud = cloud; self.onApply = onApply; _selected = State(initialValue: initialSelection) }
-    var body: some View { NavigationStack { List { ForEach(cloud.tags) { tag in Button { if selected.contains(tag.id) { selected.remove(tag.id) } else { selected.insert(tag.id) } } label: { HStack { Label(tag.name, systemImage: "tag.fill").foregroundStyle(.primary); Spacer(); if selected.contains(tag.id) { Image(systemName: "checkmark.circle.fill").foregroundStyle(.blue) } } } } }.navigationTitle("Set Tags").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Apply") { onApply(selected) } } } }.presentationDetents([.medium, .large]) }
+    var body: some View { NavigationStack { List { ForEach(cloud.tags) { tag in Button { if selected.contains(tag.id) { selected.remove(tag.id) } else { selected.insert(tag.id) } } label: { HStack { Label(tag.name, systemImage: "tag.fill").foregroundStyle(.primary); Spacer(); if selected.contains(tag.id) { Image(systemName: "checkmark.circle.fill").foregroundStyle(.blue) } } } } }.navigationTitle("Tags zuweisen").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Übernehmen") { onApply(selected) } } } }.presentationDetents([.medium, .large]) }
 }
 
 struct CompactTransferGlass: View {
@@ -155,14 +152,15 @@ extension CloudFileEntry {
 
     var typeLabel: String {
         let ext = normalizedExtension
-        if isTGImage { return "Image" }
+        if isTGImage { return "Bild" }
         if isTGVideo { return "Video" }
         if mimeType?.hasPrefix("audio/") == true || ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus"].contains(ext) { return "Audio" }
-        if ext == "pdf" { return "PDF document" }
-        if ["xls", "xlsx", "csv", "tsv", "ods", "numbers"].contains(ext) { return "Spreadsheet" }
-        if ["ppt", "pptx", "odp", "key"].contains(ext) { return "Presentation" }
-        if ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"].contains(ext) { return "Archive" }
+        if ext == "pdf" { return "PDF-Dokument" }
+        if ["xls", "xlsx", "csv", "tsv", "ods", "numbers"].contains(ext) { return "Tabelle" }
+        if ["ppt", "pptx", "odp", "key"].contains(ext) { return "Präsentation" }
+        if ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"].contains(ext) { return "Archiv" }
         if let mimeType, !mimeType.isEmpty { return mimeType }
-        return ext.isEmpty ? "File" : ext.uppercased() + " file"
+        return ext.isEmpty ? "Datei" : ext.uppercased() + "-Datei"
     }
 }
+

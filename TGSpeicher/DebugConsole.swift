@@ -19,7 +19,7 @@ struct EmergencyDebugOverlay: View {
                 }
                 .shadow(radius: 10, y: 5)
         }
-        .accessibilityLabel("Open TGSpeicher Debug Console")
+        .accessibilityLabel("TGSpeicher-Diagnose öffnen")
         .sheet(isPresented: $showConsole) {
             DebugConsoleView(telegram: telegram, isPresented: $showConsole)
         }
@@ -42,44 +42,44 @@ struct DebugConsoleView: View {
                 }
                 .padding()
             }
-            .navigationTitle("TGSpeicher Debug")
+            .navigationTitle("TGSpeicher-Diagnose")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { isPresented = false }
+                    Button("Fertig") { isPresented = false }
                 }
             }
         }
         .presentationDetents([.medium, .large])
         .confirmationDialog(
-            "Erase local Telegram data?",
+            "Lokale Telegram-Daten löschen?",
             isPresented: $confirmReset,
             titleVisibility: .visible
         ) {
-            Button("Erase Local Telegram Data", role: .destructive) {
+            Button("Lokale Telegram-Daten löschen", role: .destructive) {
                 telegram.resetAPICredentials()
                 isPresented = false
             }
-            Button("Cancel", role: .cancel) { }
+            Button("Abbrechen", role: .cancel) { }
         } message: {
-            Text("This removes TGSpeicher's API ID/hash, TDLib encryption key, local Telegram database and temporary chunks from this iPhone. It does not delete messages or files stored in Telegram.")
+            Text("API-Zugangsdaten, lokaler Telegram-Schlüssel, Sitzungsdaten und temporäre Dateiteile werden vom iPhone entfernt. Nachrichten und Dateien in Telegram bleiben erhalten.")
         }
     }
 
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Connection status", systemImage: "waveform.path.ecg")
+            Label("Verbindungsstatus", systemImage: "waveform.path.ecg")
                 .font(.headline)
 
-            debugRow("Authorization", telegram.lastAuthorizationStateName)
+            debugRow("Anmeldung", telegram.lastAuthorizationStateName)
             debugRow("Client", telegram.clientDescription)
-            debugRow("Credentials", telegram.hasAPICredentials ? "Stored locally" : "Not stored")
+            debugRow("Zugangsdaten", telegram.hasAPICredentials ? "Lokal gespeichert" : "Nicht gespeichert")
 
             if let activity = telegram.lastActivityAt {
-                debugRow("Last activity", activity.formatted(date: .omitted, time: .standard))
+                debugRow("Letzte Aktivität", activity.formatted(date: .omitted, time: .standard))
             }
 
-            Text("The debug log intentionally records TDLib states and request types only. Phone numbers, login codes, passwords and API hashes are not written to it.")
+            Text("Das Diagnoseprotokoll enthält Zustände und Anfragetypen. Telefonnummern, Anmeldecodes, Passwörter und API-Hashes werden nicht protokolliert.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -94,7 +94,7 @@ struct DebugConsoleView: View {
                 telegram.retryConnection()
                 isPresented = false
             } label: {
-                Label("Retry Telegram Connection", systemImage: "arrow.clockwise.circle.fill")
+                Label("Telegram-Verbindung erneut versuchen", systemImage: "arrow.clockwise.circle.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -107,7 +107,7 @@ struct DebugConsoleView: View {
                     copied = false
                 }
             } label: {
-                Label(copied ? "Copied" : "Copy Debug Log", systemImage: copied ? "checkmark" : "doc.on.doc")
+                Label(copied ? "Kopiert" : "Diagnoseprotokoll kopieren", systemImage: copied ? "checkmark" : "doc.on.doc")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -115,7 +115,7 @@ struct DebugConsoleView: View {
             Button(role: .destructive) {
                 confirmReset = true
             } label: {
-                Label("Erase Local Telegram Data", systemImage: "trash.fill")
+                Label("Lokale Telegram-Daten löschen", systemImage: "trash.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -127,16 +127,16 @@ struct DebugConsoleView: View {
     private var logCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("Live debug log", systemImage: "terminal.fill")
+                Label("Live-Diagnoseprotokoll", systemImage: "terminal.fill")
                     .font(.headline)
                 Spacer()
-                Text("\(telegram.debugLines.count) lines")
+                Text("\(telegram.debugLines.count) Einträge")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             if telegram.debugLines.isEmpty {
-                Text("No debug entries yet.")
+                Text("Noch keine Diagnoseeinträge.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -163,3 +163,4 @@ struct DebugConsoleView: View {
         .font(.subheadline)
     }
 }
+

@@ -11,7 +11,7 @@ private enum TGTelegramFileResolver {
         completion: @escaping (Result<(fileID: Int, size: Int64), Error>) -> Void
     ) {
         guard file.chunks.count == 1, let chunk = file.chunks.first else {
-            completion(.failure(NSError(domain: "TGSpeicher.Stream", code: 1, userInfo: [NSLocalizedDescriptionKey: "Streaming currently requires a single Telegram chunk. Large multi-part files can still be downloaded normally."])))
+            completion(.failure(NSError(domain: "TGSpeicher.Stream", code: 1, userInfo: [NSLocalizedDescriptionKey: "Direktwiedergabe ist bei einzelnen Telegram-Dateien möglich. Mehrteilige Dateien können vollständig heruntergeladen werden."])))
             return
         }
 
@@ -21,17 +21,17 @@ private enum TGTelegramFileResolver {
         }
 
         guard let chatID = file.telegramChatID ?? telegram.savedMessagesChatID, let messageID = chunk.telegramMessageID else {
-            completion(.failure(NSError(domain: "TGSpeicher.Stream", code: 2, userInfo: [NSLocalizedDescriptionKey: "The Telegram message reference for this media file is missing."])))
+            completion(.failure(NSError(domain: "TGSpeicher.Stream", code: 2, userInfo: [NSLocalizedDescriptionKey: "Für dieses Medium fehlt der Telegram-Nachrichtenverweis."])))
             return
         }
 
         telegram.send(["@type": "getMessage", "chat_id": chatID, "message_id": messageID]) { response in
             if response["@type"] as? String == "error" {
-                completion(.failure(NSError(domain: "TGSpeicher.Stream", code: 3, userInfo: [NSLocalizedDescriptionKey: response["message"] as? String ?? "Telegram could not resolve this media file."])))
+                completion(.failure(NSError(domain: "TGSpeicher.Stream", code: 3, userInfo: [NSLocalizedDescriptionKey: response["message"] as? String ?? "Telegram konnte das Medium nicht zuordnen."])))
                 return
             }
             guard let info = fileInfo(fromMessage: response), let id = info.fileID else {
-                completion(.failure(NSError(domain: "TGSpeicher.Stream", code: 4, userInfo: [NSLocalizedDescriptionKey: "Telegram returned no file identifier for this media."])))
+                completion(.failure(NSError(domain: "TGSpeicher.Stream", code: 4, userInfo: [NSLocalizedDescriptionKey: "Telegram hat keine Dateikennung für das Medium zurückgegeben."])))
                 return
             }
             completion(.success((id, info.size > 0 ? info.size : file.totalSize)))
@@ -156,13 +156,13 @@ final class TelegramStreamResourceLoader: NSObject, AVAssetResourceLoaderDelegat
             guard let self, let loadingRequest else { return }
             self.delegateQueue.async {
                 if response["@type"] as? String == "error" {
-                    loadingRequest.finishLoading(with: NSError(domain: "TGSpeicher.Stream", code: 5, userInfo: [NSLocalizedDescriptionKey: response["message"] as? String ?? "Telegram range download failed."]))
+                    loadingRequest.finishLoading(with: NSError(domain: "TGSpeicher.Stream", code: 5, userInfo: [NSLocalizedDescriptionKey: response["message"] as? String ?? "Der Teil-Download aus Telegram ist fehlgeschlagen."]))
                     return
                 }
                 guard let local = response["local"] as? [String: Any],
                       let path = local["path"] as? String,
                       !path.isEmpty else {
-                    loadingRequest.finishLoading(with: NSError(domain: "TGSpeicher.Stream", code: 6, userInfo: [NSLocalizedDescriptionKey: "Telegram returned no local cache path for the requested media range."]))
+                    loadingRequest.finishLoading(with: NSError(domain: "TGSpeicher.Stream", code: 6, userInfo: [NSLocalizedDescriptionKey: "Telegram hat keinen lokalen Speicherpfad für den Medienabschnitt zurückgegeben."]))
                     return
                 }
 
@@ -172,7 +172,7 @@ final class TelegramStreamResourceLoader: NSObject, AVAssetResourceLoaderDelegat
                     try handle.seek(toOffset: UInt64(offset))
                     let data = try handle.read(upToCount: length) ?? Data()
                     guard !data.isEmpty else {
-                        throw NSError(domain: "TGSpeicher.Stream", code: 7, userInfo: [NSLocalizedDescriptionKey: "The requested Telegram media range is not available yet."])
+                        throw NSError(domain: "TGSpeicher.Stream", code: 7, userInfo: [NSLocalizedDescriptionKey: "Der angeforderte Medienabschnitt ist noch nicht verfügbar."])
                     }
                     loadingRequest.dataRequest?.respond(with: data)
                     loadingRequest.finishLoading()
@@ -198,7 +198,7 @@ final class TelegramVideoStreamController: ObservableObject {
             return
         }
         guard let url = URL(string: "tgspeicher-stream://media/\(file.id.uuidString)") else {
-            errorMessage = "Could not create the streaming URL."
+            errorMessage = "Die Wiedergabeadresse konnte nicht erstellt werden."
             return
         }
         let asset = AVURLAsset(url: url)
@@ -247,14 +247,14 @@ final class TelegramCloudImageLoader: ObservableObject {
                     guard let self else { return }
                     self.isLoading = false
                     if response["@type"] as? String == "error" {
-                        self.errorMessage = response["message"] as? String ?? "Telegram image download failed."
+                        self.errorMessage = response["message"] as? String ?? "Das Bild konnte nicht aus Telegram geladen werden."
                         return
                     }
                     guard let local = response["local"] as? [String: Any],
                           let path = local["path"] as? String,
                           !path.isEmpty,
                           let image = UIImage(contentsOfFile: path) else {
-                        self.errorMessage = "The Telegram image could not be decoded."
+                        self.errorMessage = "Das Telegram-Bild konnte nicht gelesen werden."
                         return
                     }
                     self.image = image
@@ -281,7 +281,7 @@ struct CloudMediaPreviewSheet: View {
                 } else if file.isTGImage {
                     TelegramCloudImageView(file: file, telegram: cloud.telegram)
                 } else {
-                    ContentUnavailableView("No media preview", systemImage: "doc", description: Text("Use Download + Preview for this file type."))
+                    ContentUnavailableView("Keine Medienvorschau", systemImage: "doc", description: Text("Lade diese Datei für die Vorschau herunter."))
                 }
             }
             .navigationTitle(file.name)
@@ -289,7 +289,7 @@ struct CloudMediaPreviewSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { dismiss() } label: { Image(systemName: "xmark.circle.fill") }
-                        .accessibilityLabel("Close")
+                        .accessibilityLabel("Schließen")
                 }
             }
         }
@@ -311,10 +311,10 @@ private struct OriginalVideoPreview: View {
             } else if startedDownload && cloud.isDownloading {
                 VStack(spacing: 14) {
                     ProgressView()
-                    Text("Preparing original video…").font(.headline)
+                    Text("Originalvideo wird vorbereitet …").font(.headline)
                     Text(file.chunks.count > 1
-                         ? "Downloading \(file.chunks.count) Telegram parts, rebuilding the original, and verifying it before playback."
-                         : "Downloading the original Telegram document for reliable playback.")
+                         ? "\(file.chunks.count) Dateiteile werden geladen, zusammengesetzt und vor der Wiedergabe geprüft."
+                         : "Das Originalvideo wird für die Wiedergabe heruntergeladen.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -323,19 +323,19 @@ private struct OriginalVideoPreview: View {
             } else if waitingForDownloadSlot {
                 VStack(spacing: 14) {
                     ProgressView()
-                    Text("Waiting for the active download…")
+                    Text("Laufender Download wird abgewartet …")
                         .font(.headline)
-                    Text("The video will start preparing automatically next.")
+                    Text("Anschließend wird das Video automatisch vorbereitet.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } else {
                 ContentUnavailableView {
-                    Label("Video not prepared", systemImage: "play.slash")
+                    Label("Video noch nicht bereit", systemImage: "play.slash")
                 } description: {
-                    Text("TGSpeicher could not prepare the original video for playback.")
+                    Text("Das Originalvideo konnte nicht für die Wiedergabe vorbereitet werden.")
                 } actions: {
-                    Button("Try Again", systemImage: "arrow.clockwise") {
+                    Button("Erneut versuchen", systemImage: "arrow.clockwise") {
                         startedDownload = false
                         beginPreparing()
                     }
@@ -384,7 +384,7 @@ private struct TelegramVideoStreamView: View {
     var body: some View {
         Group {
             if let error = controller.errorMessage {
-                ContentUnavailableView("Streaming unavailable", systemImage: "play.slash", description: Text(error))
+                ContentUnavailableView("Direktwiedergabe nicht verfügbar", systemImage: "play.slash", description: Text(error))
             } else {
                 VideoPlayer(player: controller.player)
                     .background(.black)
@@ -410,12 +410,12 @@ struct TelegramCloudImageView: View {
                     .resizable()
                     .scaledToFit()
             } else if let error = loader.errorMessage {
-                ContentUnavailableView("Preview failed", systemImage: "photo.badge.exclamationmark", description: Text(error))
+                ContentUnavailableView("Vorschau fehlgeschlagen", systemImage: "photo.badge.exclamationmark", description: Text(error))
                     .foregroundStyle(.white)
             } else {
                 VStack(spacing: 12) {
                     ProgressView()
-                    Text("Loading from Telegram…").font(.caption).foregroundStyle(.secondary)
+                    Text("Wird aus Telegram geladen …").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -507,3 +507,4 @@ struct TelegramMediaThumbnailView: View {
         .onAppear { loader.load() }
     }
 }
+

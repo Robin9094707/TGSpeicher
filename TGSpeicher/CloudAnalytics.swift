@@ -96,11 +96,11 @@ extension CloudStore {
         var buckets: [String: (Int64, Int)] = [:]
         for file in index.files {
             let key: String
-            if file.isTGImage { key = "Photos" }
+            if file.isTGImage { key = "Fotos" }
             else if file.isTGVideo { key = "Videos" }
             else if file.mimeType?.hasPrefix("audio/") == true { key = "Audio" }
-            else if ["zip", "rar", "7z", "tar", "gz"].contains(file.fileExtension.lowercased()) { key = "Archives" }
-            else { key = "Other" }
+            else if ["zip", "rar", "7z", "tar", "gz"].contains(file.fileExtension.lowercased()) { key = "Archiv" }
+            else { key = "Sonstige" }
             let old = buckets[key] ?? (0, 0)
             buckets[key] = (old.0 + file.totalSize, old.1 + 1)
         }
@@ -131,7 +131,7 @@ final class TelegramUsageScanner: ObservableObject {
     @Published private(set) var verifiedMessages = 0
     @Published private(set) var lastScanAt: Date?
     @Published private(set) var isScanning = false
-    @Published private(set) var status = "Not verified yet"
+    @Published private(set) var status = "Noch nicht geprüft"
 
     private let telegram: TelegramClient
     private var cancellables = Set<AnyCancellable>()
@@ -145,7 +145,7 @@ final class TelegramUsageScanner: ObservableObject {
             verifiedMessages = defaults.integer(forKey: "stats.verifiedMessages")
             lastScanAt = defaults.object(forKey: "stats.lastScanAt") as? Date
             if let lastScanAt {
-                status = "Last verified \(lastScanAt.formatted(date: .abbreviated, time: .shortened))"
+                status = "Zuletzt geprüft: \(lastScanAt.formatted(date: .abbreviated, time: .shortened))"
             }
         }
 
@@ -166,7 +166,7 @@ final class TelegramUsageScanner: ObservableObject {
     func refresh() {
         guard !isScanning, telegram.savedMessagesChatID != nil else { return }
         isScanning = true
-        status = "Scanning TGSpeicher messages…"
+        status = "TGSpeicher-Nachrichten werden durchsucht …"
         scanMarker(at: 0, totalBytes: 0, totalMessages: 0, seen: Set<Int64>())
     }
 
@@ -176,7 +176,7 @@ final class TelegramUsageScanner: ObservableObject {
             verifiedMessages = totalMessages
             lastScanAt = Date()
             isScanning = false
-            status = "Verified from Telegram"
+            status = "In Telegram geprüft"
             defaults.set(Int(totalBytes), forKey: "stats.verifiedBytes")
             defaults.set(totalMessages, forKey: "stats.verifiedMessages")
             defaults.set(lastScanAt, forKey: "stats.lastScanAt")
@@ -204,7 +204,7 @@ final class TelegramUsageScanner: ObservableObject {
     ) {
         guard let chatID = telegram.savedMessagesChatID else {
             isScanning = false
-            status = "Telegram disconnected"
+            status = "Telegram-Verbindung getrennt"
             return
         }
 
@@ -223,9 +223,9 @@ final class TelegramUsageScanner: ObservableObject {
             if response["@type"] as? String == "error" {
                 self.isScanning = false
                 if let wait = TelegramClient.retryAfterSeconds(response) {
-                    self.status = "Telegram rate limit • retry in ~\(wait)s"
+                    self.status = "Telegram-Pause • erneut in etwa \(wait) s"
                 } else {
-                    self.status = response["message"] as? String ?? "Usage scan failed"
+                    self.status = response["message"] as? String ?? "Speicherprüfung fehlgeschlagen"
                 }
                 return
             }
@@ -244,7 +244,7 @@ final class TelegramUsageScanner: ObservableObject {
             }
 
             let nextID = TelegramClient.int64(response["next_from_message_id"]) ?? 0
-            self.status = "Scanning • \(messagesCount) Telegram objects"
+            self.status = "Prüfung • \(messagesCount) Telegram-Nachrichten"
             if nextID != 0, !messages.isEmpty, pageCount < 500 {
                 self.scanPage(
                     query: query,
@@ -270,3 +270,4 @@ final class TelegramUsageScanner: ObservableObject {
         return max(0, size)
     }
 }
+

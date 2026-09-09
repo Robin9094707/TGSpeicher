@@ -6,15 +6,15 @@ extension CloudStore {
     /// security-scoped URL alive during a long Telegram upload.
     func importPickedFileAndUpload(_ sourceURL: URL, folderID: UUID?) {
         guard upload == nil else {
-            lastError = "Another upload is already running."
+            lastError = "Es läuft bereits ein Upload."
             return
         }
         guard let inbox = inboxFolderURL else {
-            lastError = "TGSpeicher could not open its Upload Inbox."
+            lastError = "Der Datei-Eingang konnte nicht geöffnet werden."
             return
         }
 
-        let originalName = sourceURL.lastPathComponent.isEmpty ? "Imported File" : sourceURL.lastPathComponent
+        let originalName = sourceURL.lastPathComponent.isEmpty ? "Importierte Datei" : sourceURL.lastPathComponent
         let accessed = sourceURL.startAccessingSecurityScopedResource()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -45,7 +45,7 @@ extension CloudStore {
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self.lastError = "Could not import the selected file: \(error.localizedDescription)"
+                    self.lastError = "Die Datei konnte nicht importiert werden: \(error.localizedDescription)"
                 }
             }
         }
@@ -67,3 +67,4 @@ extension CloudStore {
         return candidate
     }
 }
+
