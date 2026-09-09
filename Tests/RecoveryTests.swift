@@ -172,7 +172,7 @@ struct RecoveryTests {
         try JSONEncoder().encode(receipt).write(to: root.appendingPathComponent(CatalogCodec.digest(Data(op.utf8)) + ".json"))
         let migrated = try outbox.uploadLayout(fileID: oldID, chatID: 99, total: 5_000_000_000, limit: 4_000_000_000, nativeKind: "video", partial: nil)
         check(migrated.chunkBytes == 1_900_000_000 && migrated.nativeKind == nil, "legacy send receipts preserve v3.0 layout")
-        let partial = CloudFileEntry(name: "large.zip", totalSize: 5_000_000_000, chunks: [CloudChunk(index: 1, count: 2, telegramMessageID: 1, size: 4_000_000_000, storedName: "part")], telegramChatID: 99)
+        let partial = CloudFileEntry(name: "large.zip", totalSize: 5_000_000_000, chunks: [CloudChunk(index: 1, count: 2, telegramMessageID: 1, telegramFileID: nil, remoteUniqueID: nil, size: 4_000_000_000, storedName: "part")], telegramChatID: 99)
         let restored = try outbox.uploadLayout(fileID: partial.id, chatID: 99, total: partial.totalSize, limit: 2_000_000_000, nativeKind: nil, partial: partial)
         check(restored.chunkBytes == 4_000_000_000, "reinstall recovers part boundaries from Telegram metadata")
         var index = CloudIndex()
@@ -186,7 +186,7 @@ struct RecoveryTests {
     static func testDeletionQueue() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let chunks = (1...205).map { CloudChunk(index: $0, count: 205, telegramMessageID: Int64($0), size: 1, storedName: "part") }
+        let chunks = (1...205).map { CloudChunk(index: $0, count: 205, telegramMessageID: Int64($0), telegramFileID: nil, remoteUniqueID: nil, size: 1, storedName: "part") }
         let file = CloudFileEntry(name: "archive.zip", totalSize: 205, chunks: chunks, telegramChatID: -7)
         var scheduled: [() -> Void] = []
         let schedule: DurableDeletionQueue.Scheduler = { _, action in scheduled.append(action) }
@@ -232,6 +232,11 @@ struct RecoveryTests {
         finalize.resume(account: 99, adding: [tiny]); drain(); allowCommit = true
         finalize.resume(account: 99); drain()
         check(finalCalls == 1, "catalog write retry does not repeat a confirmed deletion")
+        var timeoutReply: DurableOutbox.Reply?, timeoutCommitted = false
+        let timeout = DurableDeletionQueue(root: root.appendingPathComponent("timeout"), request: { _, reply in timeoutReply = reply }, commit: { _, _ in timeoutCommitted = true; return true }, changed: { _, _, _, error in seenError = error }, schedule: schedule)
+        timeout.resume(account: 99, adding: [tiny]); drain()
+        timeoutReply?(["@type": "ok"]); drain()
+        check(seenError != nil && !timeoutCommitted, "missing delete response times out safely and ignores late callback")
     }
 
     static func testChunker() throws {

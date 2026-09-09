@@ -313,7 +313,10 @@ final class TelegramClient: ObservableObject {
 
     func send(_ request: [String: Any], completion: (([String: Any]) -> Void)? = nil) {
         guard let id = activeClientID else {
-            DispatchQueue.main.async { self.lastError = "Telegram ist noch nicht verbunden." }
+            DispatchQueue.main.async {
+                self.lastError = "Telegram ist noch nicht verbunden."
+                completion?(DurableOutbox.error("Telegram ist noch nicht verbunden."))
+            }
             return
         }
 

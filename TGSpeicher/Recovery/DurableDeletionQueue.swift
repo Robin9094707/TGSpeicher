@@ -18,6 +18,7 @@ final class DurableDeletionQueue {
     private var running = false
     private var generation = UUID()
     private var floodAttempts = 0
+    private var requestID = UUID()
 
     init(root: URL, request: @escaping DurableOutbox.Transport,
          commit: @escaping (CloudFileEntry, Int64) -> Bool,
@@ -72,8 +73,10 @@ final class DurableDeletionQueue {
             return
         }
         let batch = Array(job.remaining.prefix(100))
+        let attempt = UUID(); requestID = attempt
         request(["@type": "deleteMessages", "chat_id": job.chatID, "message_ids": batch, "revoke": true]) { [weak self] response in
-            guard let self, self.generation == run, self.accountID == account else { return }
+            guard let self, self.generation == run, self.accountID == account, self.requestID == attempt else { return }
+            self.requestID = UUID()
             if response["@type"] as? String == "ok" {
                 let previous = self.jobs
                 self.jobs[0].remaining.removeFirst(batch.count)
@@ -93,10 +96,14 @@ final class DurableDeletionQueue {
                 self.fail("„\(job.file.name)“ konnte noch nicht vollständig gelöscht werden: \(raw)")
             }
         }
+        schedule(90) { [weak self] in
+            guard let self, self.running, self.generation == run, self.requestID == attempt else { return }
+            self.fail("Telegram hat noch nicht geantwortet. Der Löschauftrag bleibt gespeichert; bitte die Verbindung prüfen und erneut versuchen.")
+        }
     }
 
     private func publish() { changed(Set(jobs.map { $0.file.id }), running, "\(jobs.count) Datei(en) werden gelöscht …", nil) }
-    private func fail(_ message: String) { running = false; changed(Set(jobs.map { $0.file.id }), false, "Löschen angehalten", message) }
+    private func fail(_ message: String) { generation = UUID(); running = false; changed(Set(jobs.map { $0.file.id }), false, "Löschen angehalten", message) }
     private func url(_ account: Int64) -> URL { root.appendingPathComponent("\(account).json") }
     private func persist() throws {
         guard let account = accountID else { throw RecoveryError.invalid("Das Telegram-Konto fehlt.") }

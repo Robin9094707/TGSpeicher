@@ -76,6 +76,7 @@ final class CloudStore: ObservableObject {
 
         telegram.$savedMessagesChatID
             .removeDuplicates()
+            .receive(on: RunLoop.main)
             .sink { [weak self] account in
                 guard let self else { return }
                 self.deletionQueue.pause()

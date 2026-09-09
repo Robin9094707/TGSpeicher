@@ -462,7 +462,7 @@ final class PhotoBackupManager: ObservableObject {
                 self.lastLibraryScanAt = Date()
                 self.reconcileRecordsWithCloudIndex()
                 self.statusText = self.pendingResources == 0
-                    ? "Mediathek vollständig gesichert"
+                    ? (self.excludedResources > 0 ? "Mediathek geprüft; bewusst gelöschte Medien übersprungen" : "Mediathek vollständig gesichert")
                     : "Mediathek geprüft • \(self.pendingResources) Bestandteile ausstehend"
 
                 if self.isRunning && !self.isPaused {
