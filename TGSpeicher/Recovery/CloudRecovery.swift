@@ -3,7 +3,7 @@ import UIKit
 
 extension CloudStore {
     func bootstrapFromTelegram() {
-        guard let account = telegram.savedMessagesChatID, !isRefreshing, upload == nil, !isCatalogSyncing else { return }
+        guard let account = telegram.savedMessagesChatID, !isRefreshing, upload == nil, !isCatalogSyncing, !isDeleting else { return }
         recoveryRun = UUID()
         recoveryReady = false
         isRefreshing = true
@@ -28,13 +28,13 @@ extension CloudStore {
     }
 
     func fullRebuildFromTelegram() {
-        guard !isRefreshing, upload == nil, !isCatalogSyncing else { return }
+        guard !isRefreshing, upload == nil, !isCatalogSyncing, !isDeleting else { return }
         index.recovery?.scannedThrough = [:]
         bootstrapFromTelegram()
     }
 
     func setRecoveryDestination(_ chatID: Int64) {
-        guard let account = telegram.savedMessagesChatID, !isRefreshing, upload == nil, !isCatalogSyncing else { return }
+        guard let account = telegram.savedMessagesChatID, !isRefreshing, upload == nil, !isCatalogSyncing, !isDeleting else { return }
         if index.recovery == nil { index.recovery = RecoveryMetadata(accountID: account) }
         index.recovery?.accountID = account
         index.recovery?.destinationChatID = chatID
@@ -70,7 +70,7 @@ extension CloudStore {
     }
 
     func importRecoveryCatalog(from url: URL) {
-        guard let account = telegram.savedMessagesChatID, upload == nil, !isRefreshing, !isCatalogSyncing else {
+        guard let account = telegram.savedMessagesChatID, upload == nil, !isRefreshing, !isCatalogSyncing, !isDeleting else {
             lastError = "Bitte Telegram verbinden und laufende Übertragungen abwarten."; return
         }
         let scoped = url.startAccessingSecurityScopedResource()
@@ -99,7 +99,7 @@ extension CloudStore {
 
     func restoreFromCatalogPointer(_ rawMessageID: String) {
         guard let id = Int64(rawMessageID.trimmingCharacters(in: .whitespacesAndNewlines)), id > 0,
-              let chat = telegram.savedMessagesChatID, upload == nil, !isRefreshing, !isCatalogSyncing else {
+              let chat = telegram.savedMessagesChatID, upload == nil, !isRefreshing, !isCatalogSyncing, !isDeleting else {
             lastError = "Bitte eine gültige Nachrichten-ID eingeben und laufende Übertragungen abwarten."; return
         }
         recoveryRun = UUID()
@@ -220,11 +220,12 @@ extension CloudStore {
             catch { recoveryFailed(error.localizedDescription); return }
             catalogMutation += 1
             recoveryReady = true
-            persist()
+            guard persist() else { isRefreshing = false; return }
             refreshRecoveryAnchor()
             isRefreshing = false
             recoveryProgress = "\(index.files.count) Dateien abgeglichen"
             catalogStatus = "Wiederherstellung abgeschlossen"
+            retryDeletions()
             scheduleCatalogSync(delay: 1)
             return
         }

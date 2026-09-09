@@ -6,7 +6,7 @@ struct RecoveryCenterView: View {
     @State private var importing = false
     @State private var messageID = ""
 
-    private var busy: Bool { cloud.isRefreshing || cloud.isCatalogSyncing || cloud.upload != nil }
+    private var busy: Bool { cloud.isRefreshing || cloud.isCatalogSyncing || cloud.upload != nil || cloud.isDeleting }
 
     var body: some View {
         Form {

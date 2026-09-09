@@ -120,7 +120,7 @@ final class DurableOutbox {
     private func url(_ operation: String) -> URL {
         root.appendingPathComponent(CatalogCodec.digest(Data(operation.utf8)) + ".json")
     }
-    private func load(_ operation: String) throws -> Receipt? {
+    func load(_ operation: String) throws -> Receipt? {
         let path = url(operation)
         guard FileManager.default.fileExists(atPath: path.path) else { return nil }
         return try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: path))

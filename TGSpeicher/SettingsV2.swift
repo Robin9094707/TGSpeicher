@@ -28,10 +28,20 @@ struct SettingsV2: View {
                 NavigationLink("Offline-Dateien", destination: LocalDownloadsView())
                 LabeledContent("Wartende Uploads", value: "\(queue.queuedCount)")
             }
+            Section {
+                LabeledContent("Kontotyp", value: telegram.premiumLabel)
+                Toggle("Premium-Dateigröße automatisch nutzen", isOn: $telegram.usePremiumUploads)
+                LabeledContent("Neue Dateiteile bis", value: telegram.maxUploadBytes.byteCountString)
+                Button("Kontostatus aktualisieren", systemImage: "arrow.clockwise") { telegram.refreshUploadLimits(force: true) }
+                    .disabled(telegram.isCheckingUploadLimits)
+                Text(telegram.uploadLimitStatus).font(.caption).foregroundStyle(.secondary)
+            } header: { Text("Dateigröße & Premium") } footer: {
+                Text("Mit erkanntem Premium bis zu 4 GB, sonst bis zu 2 GB pro Datei. Größere Dateien werden verlustfrei aufgeteilt. Telegram kann niedrigere Grenzen vorgeben. Bereits begonnene Uploads behalten ihre ursprünglichen Teilgrenzen.")
+            }
             Section("Tags & Organisation") { NavigationLink { TagsView(cloud: cloud) } label: { LabeledContent("Tags verwalten", value: "\(cloud.tags.count)") } }
             Section("Telegram") {
                 LabeledContent("Konto", value: telegram.accountName)
-                LabeledContent("Anmeldung", value: telegram.lastAuthorizationStateName)
+                LabeledContent("Anmeldung", value: telegram.authorizationStage == .ready ? "Verbunden" : "Nicht verbunden")
                 Button("Von Telegram abmelden", systemImage: "rectangle.portrait.and.arrow.right") { telegram.logOut() }
             }
             Section("Datensicherung") {

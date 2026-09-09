@@ -106,6 +106,10 @@ final class UploadQueueManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        cloud.$isDeleting.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] deleting in
+            if !deleting { self?.processNextIfPossible() }
+        }.store(in: &cancellables)
+
         cloud.$isCatalogSyncing
             .removeDuplicates()
             .receive(on: RunLoop.main)
@@ -358,7 +362,7 @@ final class UploadQueueManager: ObservableObject {
 
     private func processNextIfPossible() {
         guard !isPaused, activeID == nil, cloud.upload == nil,
-              cloud.recoveryReady, !cloud.isCatalogSyncing, !cloud.isRefreshing else { return }
+              cloud.recoveryReady, !cloud.isCatalogSyncing, !cloud.isRefreshing, !cloud.isDeleting else { return }
         guard network.isConnected else { return }
         if cloud.checkpointBeforeNextUpload() { return }
         if preferences.wifiOnlyUploads && network.interfaceName != "Wi‑Fi" { return }
@@ -395,6 +399,14 @@ final class UploadQueueManager: ObservableObject {
             return
         }
 
+        if let photo = items[index].photoBackup, cloud.isPhotoExcluded(photo.resourceKey, chatID: photo.destinationChatID) {
+            items[index].state = .failed
+            items[index].lastError = "Bewusst aus Telegram gelöscht; die automatische Sicherung überspringt diese Datei."
+            persist()
+            DispatchQueue.main.async { [weak self] in self?.processNextIfPossible() }
+            return
+        }
+        cloud.telegram.refreshUploadLimits()
         let stableCloudFileID = items[index].cloudFileID ?? items[index].id
         items[index].cloudFileID = stableCloudFileID
         if let existing = matchingCloudFile(for: items[index]) {

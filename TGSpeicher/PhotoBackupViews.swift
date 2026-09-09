@@ -240,6 +240,10 @@ struct PhotoBackupView: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Sicherung steuern", systemImage: "externaldrive.badge.icloud").font(.headline)
+            if manager.excludedResources > 0 {
+                Text("\(manager.excludedResources) bewusst aus Telegram gelöschte Bestandteile werden übersprungen.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
 
             HStack(spacing: 10) {
                 if manager.isRunning && !manager.isPaused {

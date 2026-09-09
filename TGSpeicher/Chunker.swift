@@ -38,7 +38,7 @@ enum FileChunker {
         let totalSize = source.fileByteSize
         guard totalSize >= 0 else { throw ChunkerError.invalidFile }
 
-        let count = max(1, Int(ceil(Double(max(totalSize, 1)) / Double(maxChunkBytes))))
+        let count = max(1, Int(totalSize / maxChunkBytes + (totalSize % maxChunkBytes == 0 ? 0 : 1)))
 
         // Most camera files fit into a single Telegram document. Hashing the durable
         // queue copy in place avoids creating and writing a second full-size copy.
@@ -52,6 +52,7 @@ enum FileChunker {
                 completed += Int64(data.count)
                 progress(completed, totalSize)
             }
+            guard completed == totalSize else { throw ChunkerError.invalidFile }
             let digest = hex(hasher.finalize())
             return PreparedFile(
                 chunks: [PreparedChunk(url: source, index: 1, count: 1, size: totalSize, sha256: digest)],
@@ -93,7 +94,10 @@ enum FileChunker {
             while written < target {
                 let remaining = target - written
                 let request = Int(min(Int64(bufferSize), remaining))
-                guard let data = try reader.read(upToCount: request), !data.isEmpty else { break }
+                guard let data = try reader.read(upToCount: request), !data.isEmpty else {
+                    try? writer.close()
+                    throw ChunkerError.invalidFile
+                }
                 try writer.write(contentsOf: data)
                 chunkHasher.update(data: data)
                 fileHasher.update(data: data)
@@ -114,6 +118,7 @@ enum FileChunker {
             )
         }
 
+        guard completed == totalSize, (try reader.read(upToCount: 1))?.isEmpty != false else { throw ChunkerError.invalidFile }
         shouldRemoveRootOnExit = false
         return PreparedFile(
             chunks: output,
@@ -165,4 +170,3 @@ enum FileChunker {
         digest.map { String(format: "%02x", $0) }.joined()
     }
 }
-

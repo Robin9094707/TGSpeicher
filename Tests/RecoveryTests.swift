@@ -68,6 +68,9 @@ struct RecoveryTests {
         try CatalogCodec.validate(CatalogSnapshot(revision: 1, createdAt: Date(), folders: cycleMerged.folders, files: cycleMerged.files, tags: cycleMerged.tags))
         check(true, "merge repairs cycle spanning independently valid states")
         try testOutbox()
+        try testUploadPolicy()
+        try testDeletionQueue()
+        try testChunker()
         print("\(checks) recovery checks passed")
     }
     static func tryDecode(_ data: Data) -> CatalogSnapshot? { try? CatalogCodec.decode(data, accountID: 99) }
@@ -137,5 +140,118 @@ struct RecoveryTests {
         uncertain.send(payload, operation: "uncertain") { _ in }
         uncertain.send(payload, operation: "uncertain") { _ in }
         check(uncertainAttempts == 1, "uncertain server error never starts a second send")
+    }
+
+    static func testUploadPolicy() throws {
+        var policy = UploadPolicy()
+        check(policy.bytes() == 2_000_000_000, "unknown Premium status uses safe standard limit")
+        policy.isPremium = true
+        check(policy.bytes() == 4_000_000_000, "confirmed Premium enables 4 GB")
+        check(policy.bytes(usePremium: false) == 2_000_000_000, "user can retain standard-size parts on Premium")
+        policy.applyConfiguration(["@type": "jsonValueObject", "value": [
+            ["key": "upload_max_fileparts_premium", "value": ["@type": "jsonValueNumber", "value": 7000.0]]
+        ]])
+        check(policy.bytes() == 7000 * 524_288, "lower server configuration overrides advertised Premium limit")
+        policy.applyConfiguration(["@type": "jsonValueObject", "value": [
+            ["key": "upload_max_fileparts_premium", "value": ["@type": "jsonValueNumber", "value": Double.infinity]],
+            ["key": "upload_max_fileparts_default", "value": ["@type": "jsonValueNumber", "value": -1.0]]
+        ]])
+        check(policy.bytes() == 7000 * 524_288 && policy.bytes(usePremium: false) == 2_000_000_000, "malformed limits cannot overflow or increase allowance")
+        policy.isPremium = false
+        check(policy.bytes() == 2_000_000_000, "Premium expiration updates allowance")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outbox = DurableOutbox(root: root, request: { _, _ in }, sendFinal: { _, _ in })
+        let id = UUID()
+        let original = try outbox.uploadLayout(fileID: id, chatID: 99, total: 5_000_000_000, limit: 4_000_000_000, nativeKind: nil, partial: nil)
+        let restarted = try outbox.uploadLayout(fileID: id, chatID: 99, total: 5_000_000_000, limit: 2_000_000_000, nativeKind: nil, partial: nil)
+        check(original == restarted, "restart and Premium change preserve existing part boundaries")
+        rejects("changed source size cannot reuse upload layout") { _ = try outbox.uploadLayout(fileID: id, chatID: 99, total: 123, limit: 2_000_000_000, nativeKind: nil, partial: nil) }
+        let oldID = UUID(), op = DurableOutbox.token(fileID: oldID, part: 1, kind: "document")
+        let receipt = DurableOutbox.Receipt(operation: op, chatID: 99, phase: .pending, temporaryID: -1)
+        try JSONEncoder().encode(receipt).write(to: root.appendingPathComponent(CatalogCodec.digest(Data(op.utf8)) + ".json"))
+        let migrated = try outbox.uploadLayout(fileID: oldID, chatID: 99, total: 5_000_000_000, limit: 4_000_000_000, nativeKind: "video", partial: nil)
+        check(migrated.chunkBytes == 1_900_000_000 && migrated.nativeKind == nil, "legacy send receipts preserve v3.0 layout")
+        let partial = CloudFileEntry(name: "large.zip", totalSize: 5_000_000_000, chunks: [CloudChunk(index: 1, count: 2, telegramMessageID: 1, size: 4_000_000_000, storedName: "part")], telegramChatID: 99)
+        let restored = try outbox.uploadLayout(fileID: partial.id, chatID: 99, total: partial.totalSize, limit: 2_000_000_000, nativeKind: nil, partial: partial)
+        check(restored.chunkBytes == 4_000_000_000, "reinstall recovers part boundaries from Telegram metadata")
+        var index = CloudIndex()
+        let key = CatalogCodec.resourceIdentity(sourceKey: "asset|1|a.jpg", accountID: 99, destination: -7)
+        index.recovery = RecoveryMetadata(accountID: 99, excludedPhotoResources: [key: Date()])
+        let snapshot = CatalogSnapshot(revision: 1, createdAt: Date(), folders: [], files: [], tags: [], recovery: index.recovery)
+        let decoded = try CatalogCodec.decode(CatalogCodec.encode(snapshot), accountID: 99)
+        check(CatalogCodec.merge(decoded, into: CloudIndex(), accountID: 99).recovery?.excludedPhotoResources?[key] != nil, "intentional photo exclusions survive catalog export and reinstall")
+    }
+
+    static func testDeletionQueue() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chunks = (1...205).map { CloudChunk(index: $0, count: 205, telegramMessageID: Int64($0), size: 1, storedName: "part") }
+        let file = CloudFileEntry(name: "archive.zip", totalSize: 205, chunks: chunks, telegramChatID: -7)
+        var scheduled: [() -> Void] = []
+        let schedule: DurableDeletionQueue.Scheduler = { _, action in scheduled.append(action) }
+        func drain() { var i = 0; while !scheduled.isEmpty { i += 1; precondition(i < 100); scheduled.removeFirst()() } }
+        var batches: [[Int64]] = [], committed = 0, seenError: String?
+        let first = DurableDeletionQueue(root: root, request: { payload, done in
+            batches.append(payload["message_ids"] as! [Int64]); done(["@type": "ok"])
+        }, commit: { _, _ in committed += 1; return true }, changed: { _, _, _, error in seenError = error }, schedule: schedule)
+        first.resume(account: 99, adding: [file, file])
+        check(batches.count == 1 && batches[0].count == 100 && committed == 0, "bulk deletion deduplicates and starts only one bounded request")
+        first.pause() // Simulated process interruption after the first confirmed batch.
+        drain()
+        let restart = DurableDeletionQueue(root: root, request: { payload, done in
+            batches.append(payload["message_ids"] as! [Int64]); done(["@type": "ok"])
+        }, commit: { _, _ in committed += 1; return true }, changed: { _, _, _, error in seenError = error }, schedule: schedule)
+        restart.resume(account: 99); drain()
+        check(batches.map(\.count) == [100, 100, 5] && committed == 1, "deletion restart resumes remaining IDs and commits only after all batches")
+        let other = DurableDeletionQueue(root: root, request: { _, _ in fatalError("wrong-account deletion") }, commit: { _, _ in false }, changed: { _, _, _, _ in }, schedule: schedule)
+        other.resume(account: 100); drain()
+        check(true, "deletion jobs isolated by Telegram account")
+        var delayed: DurableOutbox.Reply?
+        let stale = DurableDeletionQueue(root: root.appendingPathComponent("stale"), request: { _, reply in delayed = reply }, commit: { _, _ in committed += 1; return true }, changed: { _, _, _, _ in }, schedule: schedule)
+        stale.resume(account: 99, adding: [file]); stale.pause(); delayed?(["@type": "ok"]); drain()
+        check(committed == 1, "late delete callback after logout cannot mutate catalog")
+        var calls = 0
+        let retry = DurableDeletionQueue(root: root.appendingPathComponent("retry"), request: { _, done in
+            calls += 1; done(calls == 1 ? ["@type": "error", "code": 429, "message": "FLOOD_WAIT_2"] : ["@type": "ok"])
+        }, commit: { _, _ in true }, changed: { _, _, _, _ in }, schedule: schedule)
+        retry.resume(account: 99, adding: [file]); drain()
+        check(calls == 4, "Telegram flood wait retries the same delete batch serially")
+        var deniedCommit = false
+        let denied = DurableDeletionQueue(root: root.appendingPathComponent("denied"), request: { _, done in done(["@type": "error", "code": 403, "message": "CHAT_ADMIN_REQUIRED"]) }, commit: { _, _ in deniedCommit = true; return true }, changed: { _, _, _, error in seenError = error }, schedule: schedule)
+        denied.resume(account: 99, adding: [file]); drain()
+        check(!deniedCommit && seenError != nil, "permission failure preserves catalog and exposes retry state")
+        let blocked = root.appendingPathComponent("blocked")
+        try Data("file".utf8).write(to: blocked)
+        let disk = DurableDeletionQueue(root: blocked, request: { _, _ in fatalError("delete before durable intent") }, commit: { _, _ in false }, changed: { _, _, _, error in seenError = error }, schedule: schedule)
+        disk.resume(account: 99, adding: [file]); drain()
+        check(seenError != nil, "unwritable delete journal blocks destructive request")
+        var allowCommit = false, finalCalls = 0
+        let tiny = CloudFileEntry(name: "tiny", totalSize: 1, chunks: [chunks[0]], telegramChatID: -7)
+        let finalize = DurableDeletionQueue(root: root.appendingPathComponent("finalize"), request: { _, done in finalCalls += 1; done(["@type": "ok"]) }, commit: { _, _ in allowCommit }, changed: { _, _, _, _ in }, schedule: schedule)
+        finalize.resume(account: 99, adding: [tiny]); drain(); allowCommit = true
+        finalize.resume(account: 99); drain()
+        check(finalCalls == 1, "catalog write retry does not repeat a confirmed deletion")
+    }
+
+    static func testChunker() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.bin")
+        let bytes = Data((0..<30).map(UInt8.init))
+        try bytes.write(to: source)
+        let prepared = try FileChunker.prepare(source: source, maxChunkBytes: 10) { _, _ in }
+        defer { FileChunker.cleanup(prepared) }
+        check(prepared.chunks.map(\.size) == [10, 10, 10], "exact split boundary never creates an extra empty part")
+        let target = root.appendingPathComponent("joined.bin")
+        try FileChunker.join(chunks: prepared.chunks.map(\.url), destination: target) { _ in }
+        let joined = try Data(contentsOf: target)
+        check(joined == bytes, "chunked download reconstructs byte-identical original")
+        rejects("source truncation during split cannot produce a false complete backup") {
+            _ = try FileChunker.prepare(source: source, maxChunkBytes: 10) { completed, _ in
+                if completed == 10 { try? Data().write(to: source, options: []) }
+            }
+        }
     }
 }
