@@ -24,7 +24,8 @@ final class TransferRuntime: ObservableObject {
                 let previous = self.previousUpload
                 self.previousUpload = upload
                 self.refreshRuntimeProtection()
-                if finishedUpload, let previous, self.cloud.lastError == nil {
+                if finishedUpload, let previous, self.cloud.lastUploadFailure == nil,
+                   self.cloud.index.files.contains(where: { $0.id == previous.id && $0.isComplete }) {
                     self.notify(title: "Upload abgeschlossen", body: previous.fileName)
                 }
             }

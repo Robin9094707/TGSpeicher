@@ -92,8 +92,7 @@ final class UploadQueueManager: ObservableObject {
         }
         recoverInterruptedUploads()
         deduplicatePhotoBackupItems()
-        persist()
-        removeRecoveredStagingReceipts()
+        if persist() { removeRecoveredStagingReceipts() }
 
         cloud.$upload
             .receive(on: RunLoop.main)
@@ -217,12 +216,18 @@ final class UploadQueueManager: ObservableObject {
         tagIDs: [UUID] = [],
         photoBackup: PhotoBackupQueueMetadata? = nil
     ) {
-        if let resourceKey = photoBackup?.resourceKey {
+        let scope = photoBackup.map {
+            CatalogCodec.resourceIdentity(sourceKey: $0.resourceKey, accountID: cloud.telegram.savedMessagesChatID,
+                destination: $0.destinationChatID ?? cloud.telegram.savedMessagesChatID)
+        }
+        if let resourceKey = photoBackup?.resourceKey, let scope {
             let alreadyQueued = items.contains {
-                $0.photoBackup?.resourceKey == resourceKey
+                $0.photoBackup?.resourceKey == resourceKey &&
+                ($0.photoBackup?.destinationChatID ?? cloud.telegram.savedMessagesChatID) == (photoBackup?.destinationChatID ?? cloud.telegram.savedMessagesChatID) &&
+                ($0.accountID == nil || $0.accountID == cloud.telegram.savedMessagesChatID)
             }
             guard !alreadyQueued,
-                  preparingPhotoResourceKeys.insert(resourceKey).inserted else {
+                  preparingPhotoResourceKeys.insert(scope).inserted else {
                 discardPreparedPhotoExport(url)
                 return
             }
@@ -278,21 +283,18 @@ final class UploadQueueManager: ObservableObject {
                 }.value
 
                 items.append(prepared)
-                if let resourceKey = prepared.photoBackup?.resourceKey {
-                    preparingPhotoResourceKeys.remove(resourceKey)
-                }
+                if let scope { preparingPhotoResourceKeys.remove(scope) }
                 isPreparingFiles = false
-                persist()
-                try? FileManager.default.removeItem(
-                    at: URL(fileURLWithPath: prepared.localPath)
-                        .deletingLastPathComponent()
-                        .appendingPathComponent("staged-upload.json")
-                )
+                if persist() {
+                    try? FileManager.default.removeItem(
+                        at: URL(fileURLWithPath: prepared.localPath)
+                            .deletingLastPathComponent()
+                            .appendingPathComponent("staged-upload.json")
+                    )
+                }
                 processNextIfPossible()
             } catch {
-                if let resourceKey = photoBackup?.resourceKey {
-                    preparingPhotoResourceKeys.remove(resourceKey)
-                }
+                if let scope { preparingPhotoResourceKeys.remove(scope) }
                 isPreparingFiles = false
                 lastError = error.localizedDescription
             }
@@ -484,7 +486,8 @@ final class UploadQueueManager: ObservableObject {
 
     private func deduplicatePhotoBackupItems() {
         let groups = Dictionary(grouping: items.filter { $0.photoBackup != nil }) {
-            $0.photoBackup!.resourceKey
+            CatalogCodec.resourceIdentity(sourceKey: $0.photoBackup!.resourceKey, accountID: $0.accountID,
+                destination: $0.photoBackup?.destinationChatID)
         }
         var duplicateIDs = Set<UUID>()
         for group in groups.values where group.count > 1 {
@@ -524,13 +527,15 @@ final class UploadQueueManager: ObservableObject {
         for folder in folders {
             let receipt = folder.appendingPathComponent("staged-upload.json")
             guard let data = try? Data(contentsOf: receipt),
-                  let staged = try? JSONDecoder().decode(QueuedUpload.self, from: data) else { continue }
+                  var staged = try? JSONDecoder().decode(QueuedUpload.self, from: data),
+                  folder.lastPathComponent == staged.id.uuidString else { continue }
             if knownIDs.contains(staged.id) { continue }
-            if FileManager.default.fileExists(atPath: staged.localPath) {
-                items.append(staged)
-            } else {
-                try? FileManager.default.removeItem(at: folder)
+            if !FileManager.default.fileExists(atPath: staged.localPath) {
+                // iOS may move the app container during updates. Resolve against
+                // this receipt's current directory; never delete an unknown copy.
+                staged.localPath = folder.appendingPathComponent(URL(fileURLWithPath: staged.localPath).lastPathComponent).path
             }
+            if FileManager.default.fileExists(atPath: staged.localPath) { items.append(staged) }
         }
     }
 

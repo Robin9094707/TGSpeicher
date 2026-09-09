@@ -201,6 +201,10 @@ extension CloudStore {
         guard let account = telegram.savedMessagesChatID else { return }
         if index.recovery == nil { index.recovery = RecoveryMetadata(accountID: account) }
         index.recovery?.accountID = account
+        if index.recovery?.destinationChatID == nil {
+            let channels = Set(index.files.filter { $0.sourceKey != nil }.compactMap(\.telegramChatID)).subtracting([account])
+            if channels.count == 1 { index.recovery?.destinationChatID = channels.first }
+        }
         let chats = Set([account] + [index.recovery?.destinationChatID].compactMap { $0 }
             + index.files.compactMap(\.telegramChatID) + (index.recovery?.partialFiles.compactMap(\.telegramChatID) ?? []))
         scanRecoveryChat(chats.sorted(), at: 0)

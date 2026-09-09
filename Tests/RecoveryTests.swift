@@ -55,6 +55,8 @@ struct RecoveryTests {
         check(merged.files[0].chunks[0].telegramFileID == nil, "session-specific TDLib IDs cleared on restore")
         local.recovery?.deletedFiles[file.id] = Date()
         check(CatalogCodec.merge(snapshot, into: local, accountID: 99).files.isEmpty, "tombstones prevent resurrection")
+        check(CatalogCodec.resourceIdentity(sourceKey: "asset", accountID: 1, destination: 10) != CatalogCodec.resourceIdentity(sourceKey: "asset", accountID: 1, destination: 20), "same photo in different channels is not discarded by queue deduplication")
+        check(CatalogCodec.resourceIdentity(sourceKey: "asset", accountID: 1, destination: 10) != CatalogCodec.resourceIdentity(sourceKey: "asset", accountID: 2, destination: 10), "photo queue resource identities isolated by account")
         let hash = CatalogCodec.digest(Data("original media".utf8))
         check(CatalogCodec.stableMediaID(hash: hash, chatID: 1) == CatalogCodec.stableMediaID(hash: hash, chatID: 1), "media identity stable across queue recreation")
         check(CatalogCodec.stableMediaID(hash: hash, chatID: 1) != CatalogCodec.stableMediaID(hash: hash, chatID: 2), "media identities scoped to destination")

@@ -42,6 +42,10 @@ enum CatalogCodec {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    static func resourceIdentity(sourceKey: String, accountID: Int64?, destination: Int64?) -> String {
+        "\(accountID ?? 0)|\(destination ?? 0)|\(sourceKey)"
+    }
+
     static func stableMediaID(hash: String, chatID: Int64) -> UUID {
         let bytes = Array(SHA256.hash(data: Data("TGSpeicher.media.v3|\(chatID)|\(hash)".utf8)))
         var b = Array(bytes.prefix(16))

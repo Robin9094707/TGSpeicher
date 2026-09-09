@@ -652,12 +652,12 @@ final class PhotoBackupManager: ObservableObject {
 
         let folderID = ensureBackupFolder()
         if let failedPhoto = queue.items.first(where: {
-            $0.state == .failed && $0.photoBackup != nil && recordsByKey[$0.photoBackup!.resourceKey] == nil
+            $0.state == .failed && matchesDestination($0) && recordsByKey[$0.photoBackup!.resourceKey] == nil
         }) {
             scheduleAutomaticRetry(failedPhoto)
             return
         }
-        if queue.items.contains(where: { $0.folderID == folderID && ($0.state == .queued || $0.state == .uploading) }) {
+        if queue.items.contains(where: { $0.folderID == folderID && matchesDestination($0) && ($0.state == .queued || $0.state == .uploading) }) {
             statusText = "Warten auf die Upload-Warteschlange …"
             return
         }
@@ -700,7 +700,7 @@ final class PhotoBackupManager: ObservableObject {
     private func exportToQueue(_ candidate: PhotoBackupCandidate, folderID: UUID) {
         let generation = backupRunGeneration
         if let existing = queue.items.first(where: {
-            $0.photoBackup?.resourceKey == candidate.resourceKey
+            $0.photoBackup?.resourceKey == candidate.resourceKey && matchesDestination($0)
         }) {
             currentCandidate = candidate
             currentFileName = candidate.fileName
@@ -880,7 +880,15 @@ final class PhotoBackupManager: ObservableObject {
         throw NSError(domain: "TGSpeicher.Photos", code: 22, userInfo: [NSLocalizedDescriptionKey: "Das vorbereitete Foto ist weiterhin größer als 10 MB."])
     }
 
+    private func matchesDestination(_ item: QueuedUpload) -> Bool {
+        item.photoBackup != nil &&
+            (item.photoBackup?.destinationChatID ?? telegram.savedMessagesChatID) == (selectedDestinationID ?? telegram.savedMessagesChatID) &&
+            (item.accountID == nil || item.accountID == telegram.savedMessagesChatID)
+    }
+
     private func handleQueue(_ items: [QueuedUpload]) {
+        guard cloud.recoveryReady else { return }
+        let items = items.filter { matchesDestination($0) }
         if let completed = items.first(where: { $0.state == .completed && $0.photoBackup != nil }) {
             if let key = completed.photoBackup?.resourceKey, recordsByKey[key] != nil {
                 queue.remove(completed)
@@ -896,7 +904,7 @@ final class PhotoBackupManager: ObservableObject {
         }
 
         if currentQueueItemID == nil,
-           let item = items.first(where: { $0.photoBackup?.resourceKey == candidate.resourceKey }) {
+           let item = items.first(where: { $0.photoBackup?.resourceKey == candidate.resourceKey && matchesDestination($0) }) {
             currentQueueItemID = item.id
             if let currentExportURL {
                 try? FileManager.default.removeItem(at: currentExportURL.deletingLastPathComponent())
@@ -1149,7 +1157,8 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     private func recalculateCounters() {
-        let cloudIDs = Set(cloud.index.files.map(\.id))
+        let destination = selectedDestinationID ?? telegram.savedMessagesChatID
+        let cloudIDs = Set(cloud.index.files.filter { ($0.telegramChatID ?? telegram.savedMessagesChatID) == destination && $0.isComplete }.map(\.id))
         var requiredCounts: [String: Int] = [:]
         var backedCounts: [String: Int] = [:]
         var newPending: [PhotoBackupCandidate] = []
@@ -1362,7 +1371,7 @@ final class PhotoBackupManager: ObservableObject {
               !isRunning, !isScanningLibrary, lastLibraryScanAt != nil else { return }
 
         let hasQueuedPhoto = queue.items.contains {
-            $0.photoBackup != nil && ($0.state == .queued || $0.state == .uploading || $0.state == .failed)
+            matchesDestination($0) && ($0.state == .queued || $0.state == .uploading || $0.state == .failed)
         }
         guard pendingResources > 0 || hasQueuedPhoto else {
             persistSession(enabled: true, paused: false, nightMode: false)
