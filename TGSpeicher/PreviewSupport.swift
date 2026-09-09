@@ -109,7 +109,7 @@ struct LocalDownloadsView: View {
         List {
             Section {
                 LabeledContent("Offline-Dateien", value: "\(files.count)")
-                LabeledContent("Disk usage", value: TGLocalDownloads.totalBytes().byteCountString)
+                LabeledContent("Speicherbelegung", value: TGLocalDownloads.totalBytes().byteCountString)
             }
 
             Section("Heruntergeladene Dateien") {

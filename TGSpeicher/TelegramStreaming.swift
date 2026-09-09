@@ -384,7 +384,7 @@ private struct TelegramVideoStreamView: View {
     var body: some View {
         Group {
             if let error = controller.errorMessage {
-                ContentUnavailableView("Streaming unavailable", systemImage: "play.slash", description: Text(error))
+                ContentUnavailableView("Direktwiedergabe nicht verfügbar", systemImage: "play.slash", description: Text(error))
             } else {
                 VideoPlayer(player: controller.player)
                     .background(.black)

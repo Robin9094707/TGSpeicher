@@ -73,7 +73,7 @@ struct DebugConsoleView: View {
 
             debugRow("Anmeldung", telegram.lastAuthorizationStateName)
             debugRow("Client", telegram.clientDescription)
-            debugRow("Credentials", telegram.hasAPICredentials ? "Stored locally" : "Not stored")
+            debugRow("Zugangsdaten", telegram.hasAPICredentials ? "Lokal gespeichert" : "Nicht gespeichert")
 
             if let activity = telegram.lastActivityAt {
                 debugRow("Letzte Aktivität", activity.formatted(date: .omitted, time: .standard))
@@ -107,7 +107,7 @@ struct DebugConsoleView: View {
                     copied = false
                 }
             } label: {
-                Label(copied ? "Copied" : "Copy Debug Log", systemImage: copied ? "checkmark" : "doc.on.doc")
+                Label(copied ? "Kopiert" : "Diagnoseprotokoll kopieren", systemImage: copied ? "checkmark" : "doc.on.doc")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)

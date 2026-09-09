@@ -32,7 +32,7 @@ struct FileDetailV2: View {
                         Text(file.totalSize.byteCountString).foregroundStyle(.secondary)
 
                         if file.isTGImage || file.isTGVideo {
-                            Button(file.isTGVideo ? "Originalvideo öffnen" : "Cloud Preview", systemImage: file.isTGVideo ? "play.circle.fill" : "photo.fill") {
+                            Button(file.isTGVideo ? "Originalvideo öffnen" : "Telegram-Vorschau", systemImage: file.isTGVideo ? "play.circle.fill" : "photo.fill") {
                                 showingCloudPreview = true
                             }
                             .buttonStyle(.borderedProminent)
@@ -40,7 +40,7 @@ struct FileDetailV2: View {
                         }
 
                         HStack {
-                            Button(localURL == nil ? "Herunterladen" : "Refresh", systemImage: "arrow.down.doc.fill") {
+                            Button(localURL == nil ? "Herunterladen" : "Aktualisieren", systemImage: "arrow.down.doc.fill") {
                                 previewAfterDownload = false
                                 cloud.downloadAndReassemble(file)
                             }
@@ -76,7 +76,7 @@ struct FileDetailV2: View {
                         LabeledContent("Typ", value: file.typeLabel)
                         LabeledContent("Erstellt", value: file.createdAt.formatted(date: .abbreviated, time: .shortened))
                         LabeledContent("Geändert", value: file.modifiedAt.formatted(date: .abbreviated, time: .shortened))
-                        LabeledContent("Cloud source", value: "Telegram Saved Messages")
+                        LabeledContent("Telegram-Quelle", value: "Telegram: Gespeichertes")
                         if let folderID = file.folderID {
                             let path = cloud.folderPath(for: folderID).map(\.name).joined(separator: " / ")
                             LabeledContent("Ordner", value: path.isEmpty ? "Meine Dateien" : path)
@@ -218,7 +218,7 @@ struct SearchHubV2: View {
                 }
             }
 
-            Section(query.isEmpty ? "Zuletzt verwendete Dateien" : "Results") {
+            Section(query.isEmpty ? "Zuletzt verwendete Dateien" : "Ergebnisse") {
                 if results.isEmpty {
                     ContentUnavailableView("Keine Ergebnisse", systemImage: "magnifyingglass", description: Text("Keine Dateien für „\(query)“ gefunden."))
                 } else {

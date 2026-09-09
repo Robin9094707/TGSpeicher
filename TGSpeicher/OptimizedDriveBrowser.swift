@@ -592,7 +592,7 @@ struct OptimizedDriveBrowserV2: View {
             HStack(spacing: 8) {
                 OptimizedMiniMetric(title: "Dateien", value: "\(directory.currentUsage.fileCount)", icon: "doc.fill")
                 OptimizedMiniMetric(title: "Größe", value: directory.currentUsage.bytes.byteCountString, icon: "externaldrive.fill")
-                OptimizedMiniMetric(title: "Visible", value: "\(min(directory.files.count, visibleFileLimit))", icon: "eye.fill")
+                OptimizedMiniMetric(title: "Sichtbar", value: "\(min(directory.files.count, visibleFileLimit))", icon: "eye.fill")
             }
 
             HStack(spacing: 8) {

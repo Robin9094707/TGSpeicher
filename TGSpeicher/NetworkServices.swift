@@ -19,7 +19,7 @@ final class TGNetworkMonitor: ObservableObject {
                 self.isExpensive = path.isExpensive
                 self.isConstrained = path.isConstrained
                 if path.usesInterfaceType(.wifi) { self.interfaceName = "Wi‑Fi" }
-                else if path.usesInterfaceType(.cellular) { self.interfaceName = "Cellular" }
+                else if path.usesInterfaceType(.cellular) { self.interfaceName = "Mobilfunk" }
                 else if path.usesInterfaceType(.wiredEthernet) { self.interfaceName = "Ethernet" }
                 else { self.interfaceName = path.status == .satisfied ? "Netzwerk" : "Offline" }
             }
@@ -53,7 +53,7 @@ final class TGProxyManager: ObservableObject {
     @Published var portText: String
     @Published var username: String
     @Published var secret: String
-    @Published private(set) var status = "Direct connection"
+    @Published private(set) var status = "Direkte Verbindung"
     @Published private(set) var activeProxyID: Int?
     @Published var lastError: String?
 
@@ -86,7 +86,7 @@ final class TGProxyManager: ObservableObject {
                     self.lastError = response["message"] as? String ?? "Der Proxy konnte nicht deaktiviert werden."
                 } else {
                     self.activeProxyID = nil
-                    self.status = "Direct connection"
+                    self.status = "Direkte Verbindung"
                     self.save()
                 }
             }
@@ -155,7 +155,7 @@ final class TGProxyManager: ObservableObject {
             } else if let seconds = response["seconds"] as? Double {
                 self.status = String(format: "Proxy latency %.0f ms", seconds * 1000)
             } else {
-                self.status = "Proxy reachable"
+                self.status = "Proxy erreichbar"
             }
         }
     }

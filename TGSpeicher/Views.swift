@@ -80,9 +80,9 @@ struct LoginView: View {
                     case .emailAddress: emailAddressCard
                     case .emailCode(let pattern): emailCodeCard(pattern: pattern)
                     case .closed:
-                        recoveryCard(title: "Session closed", message: "Telegram hat die lokale Sitzung geschlossen. Verbinde dich erneut; deine Dateien bleiben in Telegram erhalten.")
+                        recoveryCard(title: "Sitzung geschlossen", message: "Telegram hat die lokale Sitzung geschlossen. Verbinde dich erneut; deine Dateien bleiben in Telegram erhalten.")
                     case .error(let text):
-                        recoveryCard(title: "Telegram needs attention", message: text)
+                        recoveryCard(title: "Telegram benötigt deine Eingabe", message: text)
                     case .ready: EmptyView()
                     }
                 }
@@ -126,10 +126,10 @@ struct LoginView: View {
             Label("Telegram-API-Zugang", systemImage: "key.fill").font(.headline)
             Text("Verwende die API-ID und den API-Hash von my.telegram.org. Sie werden im Schlüsselbund deines iPhones gespeichert.")
                 .font(.subheadline).foregroundStyle(.secondary)
-            TextField("API ID", text: $apiID)
+            TextField("API-ID", text: $apiID)
                 .keyboardType(.numberPad)
                 .textFieldStyle(.roundedBorder)
-            SecureField("API Hash", text: $apiHash)
+            SecureField("API-Hash", text: $apiHash)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
@@ -262,7 +262,7 @@ struct LoginView: View {
     private var emailAddressCard: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label("E-Mail-Bestätigung", systemImage: "envelope.fill").font(.headline)
-            TextField("Email address", text: $email)
+            TextField("E-Mail-Adresse", text: $email)
                 .keyboardType(.emailAddress)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -454,7 +454,7 @@ struct FolderView: View {
                 }
             }
 
-            Section(searchText.isEmpty ? "Dateien" : "Search results") {
+            Section(searchText.isEmpty ? "Dateien" : "Suchergebnisse") {
                 let files = searchText.isEmpty ? cloud.files(in: folderID) : cloud.searchFiles(searchText)
                 if files.isEmpty {
                     ContentUnavailableView(
@@ -760,12 +760,12 @@ struct DashboardView: View {
                 .tgGlassCard()
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                    MetricCard(title: "Tracked cloud", value: cloud.totalTrackedBytes.byteCountString, icon: "externaldrive.fill")
+                    MetricCard(title: "Erfasster Speicher", value: cloud.totalTrackedBytes.byteCountString, icon: "externaldrive.fill")
                     MetricCard(title: "Dateien", value: "\(cloud.index.files.count)", icon: "doc.fill")
                     MetricCard(title: "Ordner", value: "\(cloud.index.folders.count)", icon: "folder.fill")
                     MetricCard(title: "Tags", value: "\(cloud.index.tags.count)", icon: "tag.fill")
                     MetricCard(title: "Dateiteile", value: "\(cloud.totalChunks)", icon: "square.stack.3d.up.fill")
-                    MetricCard(title: "Catalog", value: "r\(cloud.index.revision)", icon: "list.bullet.rectangle.fill")
+                    MetricCard(title: "Katalog", value: "r\(cloud.index.revision)", icon: "list.bullet.rectangle.fill")
                 }
 
                 VStack(alignment: .leading, spacing: 10) {

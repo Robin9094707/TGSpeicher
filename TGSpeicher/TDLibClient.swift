@@ -115,7 +115,7 @@ final class TelegramClient: ObservableObject {
         savedMessagesChatID = nil
         loginCodeInfo = nil
         lastError = nil
-        lastAuthorizationStateName = "Reset"
+        lastAuthorizationStateName = "Zurücksetzen"
         isAuthActionInFlight = false
         authorizationStage = .apiCredentials
         debug("Local Telegram login data deleted")
@@ -143,7 +143,7 @@ final class TelegramClient: ObservableObject {
         isAuthActionInFlight = false
         tdlibParametersInFlight = false
         tdlibParametersConfigured = false
-        lastAuthorizationStateName = "Starting"
+        lastAuthorizationStateName = "Wird gestartet"
 
         let generation = UUID()
         startGeneration = generation
@@ -256,7 +256,7 @@ final class TelegramClient: ObservableObject {
     }
 
     func submitEmailAddress(_ email: String) {
-        performAuthRequest(["@type": "setAuthenticationEmailAddress", "email_address": email.trimmingCharacters(in: .whitespacesAndNewlines)], label: "email address")
+        performAuthRequest(["@type": "setAuthenticationEmailAddress", "email_address": email.trimmingCharacters(in: .whitespacesAndNewlines)], label: "E-Mail-Adresse")
     }
 
     func submitEmailCode(_ code: String) {
@@ -492,7 +492,7 @@ final class TelegramClient: ObservableObject {
 
         case "error":
             if response["@extra"] == nil {
-                let message = response["message"] as? String ?? "Unknown Telegram error"
+                let message = response["message"] as? String ?? "Unbekannter Telegram-Fehler"
                 debug("← error: \(message)")
                 DispatchQueue.main.async { self.lastError = message }
             }
@@ -701,7 +701,7 @@ final class TelegramClient: ObservableObject {
 
     private func surfaceError(_ response: [String: Any]) {
         guard response["@type"] as? String == "error" else { return }
-        let raw = response["message"] as? String ?? "Unknown Telegram error"
+        let raw = response["message"] as? String ?? "Unbekannter Telegram-Fehler"
         debug("TDLib error: \(raw)")
         let friendly = Self.retryAfterSeconds(response).map { "Telegram rate limit: please wait about \($0) seconds." }
             ?? raw.replacingOccurrences(of: "_", with: " ")

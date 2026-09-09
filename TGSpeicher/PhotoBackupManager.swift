@@ -801,7 +801,7 @@ final class PhotoBackupManager: ObservableObject {
                 self.photoExportRetryCount[candidate.resourceKey] = nil
                 guard let chatID = self.selectedDestinationID ?? self.telegram.savedMessagesChatID else {
                     self.scheduleInfrastructureRetry(
-                        candidate, folderID: folderID, stage: "Backup destination",
+                        candidate, folderID: folderID, stage: "Sicherungsziel",
                         message: "Der gewählte Telegram-Kanal ist nicht verfügbar."
                     )
                     return
@@ -1010,7 +1010,7 @@ final class PhotoBackupManager: ObservableObject {
             duration: metadata.nativeMedia?.duration ?? 0
         )
         let message = item.lastError ?? "Der Telegram-Upload ist wiederholt fehlgeschlagen."
-        let stage = FileManager.default.fileExists(atPath: item.localPath) ? "Telegram-Upload" : "Queue recovery"
+        let stage = FileManager.default.fileExists(atPath: item.localPath) ? "Telegram-Upload" : "Warteschlangen-Wiederherstellung"
         if currentQueueItemID == item.id {
             currentQueueItemID = nil
             currentCandidate = nil
