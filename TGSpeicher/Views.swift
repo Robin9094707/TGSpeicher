@@ -37,7 +37,7 @@ struct AppBackground: View {
         ZStack {
             Color(uiColor: .systemBackground)
             RadialGradient(
-                colors: [.blue.opacity(0.17), .clear],
+                colors: [.blue.opacity(0.07), .clear],
                 center: .topTrailing,
                 startRadius: 20,
                 endRadius: 540
@@ -925,3 +925,4 @@ extension View {
         }
     }
 }
+

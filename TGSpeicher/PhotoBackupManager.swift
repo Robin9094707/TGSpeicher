@@ -217,6 +217,24 @@ final class PhotoBackupManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        cloud.$recoveryReady
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] ready in
+                guard let self else { return }
+                self.remoteIndexReady = ready
+                if ready {
+                    if let destination = self.cloud.index.recovery?.destinationChatID ?? self.telegram.savedMessagesChatID {
+                        self.selectedDestinationID = destination
+                        self.defaults.set(String(destination), forKey: Self.destinationKey)
+                    }
+                    self.rebuildDestinationList()
+                    self.reconcileRecordsWithCloudIndex()
+                    self.refreshAfterRemoteIndexReady()
+                } else { self.statusText = "Telegram-Katalog wird wiederhergestellt …" }
+            }
+            .store(in: &cancellables)
+
         telegram.$writableBackupChannels
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.rebuildDestinationList() }
@@ -265,7 +283,8 @@ final class PhotoBackupManager: ObservableObject {
     func refreshBackupDestinations() { telegram.refreshWritableBackupChannels() }
 
     func selectBackupDestination(_ destination: TelegramBackupDestination) {
-        guard cloud.upload == nil, currentQueueItemID == nil else {
+        guard cloud.upload == nil, currentQueueItemID == nil, !cloud.isRefreshing, !cloud.isCatalogSyncing,
+              !queue.items.contains(where: { $0.state == .queued || $0.state == .uploading }) else {
             lastError = "Pause the current upload before changing the Telegram backup channel."
             return
         }
@@ -281,7 +300,7 @@ final class PhotoBackupManager: ObservableObject {
         if restore {
             remoteIndexReady = false
             statusText = "Restoring backup index from \(title)…"
-            restoreRemoteIndex()
+            cloud.setRecoveryDestination(id)
         }
     }
 
@@ -322,7 +341,7 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     func refreshLibrary() {
-        guard hasLibraryAccess else { return }
+        guard hasLibraryAccess, cloud.recoveryReady else { return }
         guard !isScanningLibrary else { return }
 
         let generation = UUID()
@@ -330,7 +349,8 @@ final class PhotoBackupManager: ObservableObject {
         isScanningLibrary = true
         statusText = "Scanning Photos library in background…"
         let knownRecords = recordsByKey
-        let cloudFiles = cloud.index.files
+        let destination = selectedDestinationID ?? telegram.savedMessagesChatID
+        let cloudFiles = cloud.index.files.filter { $0.isComplete && ($0.telegramChatID ?? telegram.savedMessagesChatID) == destination }
 
         libraryScanQueue.async { [weak self] in
             guard let self else { return }
@@ -585,7 +605,11 @@ final class PhotoBackupManager: ObservableObject {
         guard index < ids.count else { completion(!ids.isEmpty); return }
         telegram.send(["@type": "getMessage", "chat_id": chatID, "message_id": ids[index]]) { [weak self] response in
             guard let self else { return }
-            if response["@type"] as? String == "error" { completion(false); return }
+            if response["@type"] as? String == "error" {
+                self.isVerifying = false
+                self.lastError = "Die Telegram-Prüfung wurde unterbrochen. Vorhandene Sicherungen bleiben unverändert. Bitte später erneut prüfen."
+                return
+            }
             self.verifyMessageIDs(ids, at: index + 1, chatID: chatID, completion: completion)
         }
     }
@@ -593,7 +617,7 @@ final class PhotoBackupManager: ObservableObject {
     private func processNextIfPossible() {
         guard isRunning, !isPaused, currentCandidate == nil, currentQueueItemID == nil else { return }
         guard !isExportingFromPhotos else { return }
-        guard remoteIndexReady else {
+        guard remoteIndexReady, cloud.recoveryReady else {
             statusText = "Restoring the Telegram photo index…"
             return
         }
@@ -1155,7 +1179,7 @@ final class PhotoBackupManager: ObservableObject {
         if let url = localIndexURL,
            let data = try? Data(contentsOf: url),
            let snapshot = try? JSONDecoder().decode(PhotoBackupSnapshot.self, from: data) {
-            recordsByKey = Dictionary(uniqueKeysWithValues: snapshot.records.map { ($0.resourceKey, $0) })
+            recordsByKey = Dictionary(snapshot.records.map { ($0.resourceKey, $0) }, uniquingKeysWith: { a, b in a.uploadedAt >= b.uploadedAt ? a : b })
         }
         if let journalURL = localJournalURL, let data = try? Data(contentsOf: journalURL) {
             for line in data.split(separator: 0x0A) {
@@ -1286,219 +1310,13 @@ final class PhotoBackupManager: ObservableObject {
     }
 
     private func syncIndexNow() {
-        guard let chatID = selectedDestinationID ?? telegram.savedMessagesChatID else { return }
-        guard cloud.upload == nil else { syncIndexSoon(delay: 4); return }
-
-        let fileIDs = Set(recordsByKey.values.map(\.cloudFileID))
-        let snapshot = PhotoBackupSnapshot(
-            revision: Int64(Date().timeIntervalSince1970),
-            updatedAt: Date(),
-            records: Array(recordsByKey.values),
-            files: cloud.index.files.filter { fileIDs.contains($0.id) }
-        )
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("TGSpeicher-Photo-Backup-Index-\(UUID().uuidString).json")
-        indexIOQueue.async {
-            guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            do { try data.write(to: url, options: [.atomic]) } catch { return }
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                guard self.cloud.upload == nil else {
-                    try? FileManager.default.removeItem(at: url)
-                    self.syncIndexSoon(delay: 4)
-                    return
-                }
-                let request: [String: Any] = [
-                    "@type": "sendMessage",
-                    "chat_id": chatID,
-                    "topic_id": NSNull(),
-                    "reply_to": NSNull(),
-                    "options": NSNull(),
-                    "reply_markup": NSNull(),
-                    "input_message_content": [
-                        "@type": "inputMessageDocument",
-                        "document": ["@type": "inputFileLocal", "path": url.path],
-                        "thumbnail": NSNull(),
-                        "disable_content_type_detection": true,
-                        "caption": ["@type": "formattedText", "text": Self.marker, "entities": []]
-                    ]
-                ]
-
-                self.telegram.sendMessageAwaitingFinal(request) { [weak self] response in
-                    try? FileManager.default.removeItem(at: url)
-                    guard let self else { return }
-                    guard response["@type"] as? String != "error", let newID = TelegramClient.int64(response["id"]) else { return }
-                    let old = self.snapshotMessageID
-                    self.snapshotMessageID = newID
-                    self.defaults.set(newID, forKey: "photos.snapshotMessageID")
-                    if let old, old != newID {
-                        self.telegram.send(["@type": "deleteMessages", "chat_id": chatID, "message_ids": [old], "revoke": true])
-                    }
-                }
-            }
-        }
+        guard cloud.recoveryReady else { return }
+        cloud.syncCatalogNow()
     }
 
     private func restoreRemoteIndex() {
-        guard let chatID = selectedDestinationID ?? telegram.savedMessagesChatID else { return }
-        telegram.send([
-            "@type": "searchChatMessages",
-            "chat_id": chatID,
-            "topic_id": NSNull(),
-            "query": Self.marker,
-            "sender_id": NSNull(),
-            "from_message_id": 0,
-            "offset": 0,
-            "limit": 10,
-            "filter": NSNull()
-        ]) { [weak self] response in
-            guard let self else { return }
-            guard response["@type"] as? String != "error" else {
-                self.remoteIndexReady = true
-                self.refreshAfterRemoteIndexReady()
-                return
-            }
-            let messages = response["messages"] as? [[String: Any]] ?? []
-            guard let message = messages.first(where: { self.documentFileID(from: $0) != nil }),
-                  let messageID = TelegramClient.int64(message["id"]),
-                  let fileID = self.documentFileID(from: message) else {
-                self.restoreNativeMediaGap(chatID: chatID, fromMessageID: 0, newerThan: .distantPast)
-                return
-            }
-            self.snapshotMessageID = messageID
-            self.defaults.set(messageID, forKey: "photos.snapshotMessageID")
-            self.telegram.send([
-                "@type": "downloadFile", "file_id": fileID, "priority": 32, "offset": 0, "limit": 0, "synchronous": true
-            ]) { [weak self] file in
-                guard let self else { return }
-                if let local = file["local"] as? [String: Any], let path = local["path"] as? String,
-                   let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-                   let snapshot = try? JSONDecoder().decode(PhotoBackupSnapshot.self, from: data) {
-                    var restoredFiles = snapshot.files ?? []
-                    for fileIndex in restoredFiles.indices {
-                        for chunkIndex in restoredFiles[fileIndex].chunks.indices {
-                            restoredFiles[fileIndex].chunks[chunkIndex].telegramFileID = nil
-                        }
-                    }
-                    self.cloud.mergeRecoveredPhotoFiles(restoredFiles)
-                    for record in snapshot.records {
-                        if let existing = self.recordsByKey[record.resourceKey], existing.uploadedAt > record.uploadedAt { continue }
-                        self.recordsByKey[record.resourceKey] = record
-                    }
-                    self.persistLocalIndex()
-                    self.restoreNativeMediaGap(chatID: chatID, fromMessageID: 0, newerThan: snapshot.updatedAt)
-                    return
-                }
-                self.restoreNativeMediaGap(chatID: chatID, fromMessageID: 0, newerThan: .distantPast)
-            }
-        }
-    }
-
-    private func restoreNativeMediaGap(chatID: Int64, fromMessageID: Int64, newerThan cutoff: Date) {
-        telegram.send([
-            "@type": "searchChatMessages", "chat_id": chatID, "topic_id": NSNull(),
-            "query": TGManifest.markerV2, "sender_id": NSNull(),
-            "from_message_id": fromMessageID, "offset": 0, "limit": 100, "filter": NSNull()
-        ]) { [weak self] response in
-            guard let self else { return }
-            guard response["@type"] as? String != "error" else {
-                self.remoteIndexReady = true
-                self.refreshAfterRemoteIndexReady()
-                return
-            }
-            let messages = response["messages"] as? [[String: Any]] ?? []
-            var reachedSnapshot = false
-            var recoveredFiles: [CloudFileEntry] = []
-            for message in messages {
-                let date = Date(timeIntervalSince1970: TimeInterval(TelegramClient.int64(message["date"]) ?? 0))
-                if date <= cutoff { reachedSnapshot = true; continue }
-                if let recovered = self.recoverNativeMediaMessage(message, chatID: chatID) {
-                    recoveredFiles.append(recovered)
-                }
-            }
-            self.cloud.mergeRecoveredPhotoFiles(recoveredFiles)
-            let next = TelegramClient.int64(response["next_from_message_id"]) ?? 0
-            if !reachedSnapshot, next != 0, !messages.isEmpty {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                    self?.restoreNativeMediaGap(chatID: chatID, fromMessageID: next, newerThan: cutoff)
-                }
-            } else {
-                self.persistLocalIndex()
-                self.remoteIndexReady = true
-                self.refreshAfterRemoteIndexReady()
-            }
-        }
-    }
-
-    private func recoverNativeMediaMessage(_ message: [String: Any], chatID: Int64) -> CloudFileEntry? {
-        guard let content = message["content"] as? [String: Any],
-              let contentType = content["@type"] as? String,
-              contentType == "messagePhoto" || contentType == "messageVideo",
-              let caption = content["caption"] as? [String: Any],
-              let text = caption["text"] as? String,
-              let manifest = decodePhotoManifest(text),
-              manifest.kind == "nativePhoto" || manifest.kind == "nativeVideo",
-              let fileID = manifest.fileID,
-              let sourceKey = manifest.sourceKey,
-              let assetID = manifest.assetLocalIdentifier,
-              let resourceType = manifest.resourceTypeRawValue,
-              let messageID = TelegramClient.int64(message["id"]) else { return nil }
-
-        let info = nativeFileInfo(content: content)
-        let mediaKind = manifest.mediaKind ?? (contentType == "messageVideo" ? "video" : "photo")
-        let entry = CloudFileEntry(
-            id: fileID, name: manifest.name, folderID: manifest.folderID,
-            totalSize: info.size, createdAt: manifest.mediaCreationDate ?? manifest.createdAt,
-            modifiedAt: manifest.createdAt,
-            chunks: [CloudChunk(index: 1, count: 1, telegramMessageID: messageID,
-                telegramFileID: info.fileID, remoteUniqueID: info.uniqueID,
-                size: info.size, storedName: manifest.name)],
-            mimeType: mediaKind == "video" ? "video/mp4" : "image/jpeg",
-            tagIDs: manifest.tagIDs ?? [], sha256: nil, sourceKey: sourceKey,
-            telegramChatID: chatID,
-            storageKind: mediaKind == "video" ? "nativeVideo" : "nativePhoto"
-        )
-        let record = PhotoBackupRecord(
-            resourceKey: sourceKey, assetLocalIdentifier: assetID,
-            resourceTypeRawValue: resourceType, fileName: manifest.name,
-            mediaKind: mediaKind, cloudFileID: fileID,
-            creationDate: manifest.mediaCreationDate, uploadedAt: manifest.createdAt
-        )
-        let existingDate = recordsByKey[sourceKey]?.uploadedAt ?? .distantPast
-        if existingDate < record.uploadedAt {
-            recordsByKey[sourceKey] = record
-        }
-        return entry
-    }
-
-    private func decodePhotoManifest(_ text: String) -> TGManifest? {
-        guard let range = text.range(of: TGManifest.markerV2) else { return nil }
-        let payload = text[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = Data(base64Encoded: payload) else { return nil }
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(TGManifest.self, from: data)
-    }
-
-    private func nativeFileInfo(content: [String: Any]) -> (fileID: Int?, uniqueID: String?, size: Int64) {
-        let file: [String: Any]?
-        if content["@type"] as? String == "messageVideo" {
-            file = ((content["video"] as? [String: Any])?["video"] as? [String: Any])
-        } else {
-            let sizes = ((content["photo"] as? [String: Any])?["sizes"] as? [[String: Any]]) ?? []
-            file = sizes.compactMap { $0["photo"] as? [String: Any] }.max {
-                (TelegramClient.int64($0["size"]) ?? 0) < (TelegramClient.int64($1["size"]) ?? 0)
-            }
-        }
-        guard let file else { return (nil, nil, 0) }
-        return (TelegramClient.int(file["id"]), (file["remote"] as? [String: Any])?["unique_id"] as? String,
-            TelegramClient.int64(file["size"]) ?? TelegramClient.int64(file["expected_size"]) ?? 0)
-    }
-
-    private func documentFileID(from message: [String: Any]) -> Int? {
-        guard let content = message["content"] as? [String: Any],
-              let document = content["document"] as? [String: Any],
-              let file = document["document"] as? [String: Any] else { return nil }
-        return TelegramClient.int(file["id"])
+        remoteIndexReady = cloud.recoveryReady
+        if remoteIndexReady { refreshAfterRemoteIndexReady() }
     }
 
     private func maybeAutoStart() {
@@ -1574,3 +1392,4 @@ final class PhotoBackupManager: ObservableObject {
         }
     }
 }
+

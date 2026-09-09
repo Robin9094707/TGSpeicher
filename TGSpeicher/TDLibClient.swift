@@ -30,6 +30,20 @@ final class TelegramClient: ObservableObject {
     private var finalMessageCallbacks: [Int64: ([String: Any]) -> Void] = [:]
     private var earlyFinalMessages: [Int64: [String: Any]] = [:]
 
+    private lazy var durableOutbox = DurableOutbox(
+        root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("TGSpeicher/Outbox-v3"),
+        request: { [weak self] request, done in self?.send(request, completion: done) },
+        sendFinal: { [weak self] request, done in self?.sendMessageAwaitingFinal(request, completion: done) }
+    )
+
+    func sendDurably(_ request: [String: Any], operation: String, completion: @escaping ([String: Any]) -> Void) {
+        let scoped = operation
+        var payload = request
+        payload["tgs_operation"] = scoped
+        durableOutbox.send(payload, operation: scoped, completion: completion)
+    }
+
     private var receiverRunning = false
     private var receiverShouldStop = false
     private var tdlibParametersInFlight = false
@@ -297,7 +311,9 @@ final class TelegramClient: ObservableObject {
     }
 
     func sendMessageAwaitingFinal(_ request: [String: Any], completion: @escaping ([String: Any]) -> Void) {
-        send(request) { [weak self] message in
+        var cleanRequest = request
+        let operation = cleanRequest.removeValue(forKey: "tgs_operation") as? String
+        send(cleanRequest) { [weak self] message in
             guard let self else { return }
             if message["@type"] as? String == "error" { completion(message); return }
             guard let temporaryID = Self.int64(message["id"]) else {
@@ -309,6 +325,10 @@ final class TelegramClient: ObservableObject {
                 return
             }
 
+            if let operation, let chatID = Self.int64(message["chat_id"]) {
+                do { try self.durableOutbox.notePending(operation: operation, chatID: chatID, temporaryID: temporaryID) }
+                catch { self.lastError = "Die vorläufige Telegram-ID konnte nicht gespeichert werden. Die Wiederherstellung prüft den Sendevorgang." }
+            }
             self.callbackLock.lock()
             if let early = self.earlyFinalMessages.removeValue(forKey: temporaryID) {
                 self.callbackLock.unlock()
@@ -714,3 +734,4 @@ final class TelegramClient: ObservableObject {
         return nil
     }
 }
+

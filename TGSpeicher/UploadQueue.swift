@@ -34,6 +34,7 @@ struct QueuedUpload: Identifiable, Codable, Hashable {
     var cloudFileID: UUID?
     var photoBackup: PhotoBackupQueueMetadata?
     var automaticRetryCount: Int?
+    var accountID: Int64? = nil
 
     init(
         id: UUID = UUID(),
@@ -65,7 +66,9 @@ struct QueuedUpload: Identifiable, Codable, Hashable {
 @MainActor
 final class UploadQueueManager: ObservableObject {
     @Published private(set) var items: [QueuedUpload] = []
-    @Published var isPaused = false
+    @Published var isPaused = UserDefaults.standard.bool(forKey: "queue.paused.v3") {
+        didSet { UserDefaults.standard.set(isPaused, forKey: "queue.paused.v3") }
+    }
     @Published private(set) var isPreparingFiles = false
     @Published var lastError: String?
 
@@ -106,6 +109,12 @@ final class UploadQueueManager: ObservableObject {
             .sink { [weak self] syncing in
                 if !syncing { self?.processNextIfPossible() }
             }
+            .store(in: &cancellables)
+
+        cloud.$recoveryReady
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] ready in if ready { self?.processNextIfPossible() } }
             .store(in: &cancellables)
 
         cloud.$isRefreshing
@@ -244,6 +253,11 @@ final class UploadQueueManager: ObservableObject {
 
                     var preparedItem = stagedItem
                     preparedItem.byteSize = destination.fileByteSize
+                    if let chat = photoBackup?.destinationChatID {
+                        let hash = try FileChunker.sha256(of: destination)
+                        preparedItem.cloudFileID = CatalogCodec.stableMediaID(hash: hash, chatID: chat)
+                    }
+                    try JSONEncoder().encode(preparedItem).write(to: receiptURL, options: [.atomic])
                     return preparedItem
                 }.value
 
@@ -326,11 +340,26 @@ final class UploadQueueManager: ObservableObject {
 
     private func processNextIfPossible() {
         guard !isPaused, activeID == nil, cloud.upload == nil,
-              !cloud.isCatalogSyncing, !cloud.isRefreshing else { return }
+              cloud.recoveryReady, !cloud.isCatalogSyncing, !cloud.isRefreshing else { return }
         guard network.isConnected else { return }
+        if cloud.checkpointBeforeNextUpload() { return }
         if preferences.wifiOnlyUploads && network.interfaceName != "Wi‑Fi" { return }
         guard cloud.telegram.savedMessagesChatID != nil else { return }
-        guard let index = items.firstIndex(where: { $0.state == .queued }) else { return }
+        guard let account = cloud.telegram.savedMessagesChatID else { return }
+        guard let index = items.firstIndex(where: { $0.state == .queued && ($0.accountID == nil || $0.accountID == account) }) else { return }
+        items[index].accountID = account
+
+        let stableCloudFileID = items[index].cloudFileID ?? items[index].id
+        items[index].cloudFileID = stableCloudFileID
+        if let existing = matchingCloudFile(for: items[index]) {
+            items[index].cloudFileID = existing.id
+            items[index].state = .completed
+            items[index].completedAt = Date()
+            items[index].lastError = nil
+            persist()
+            DispatchQueue.main.async { [weak self] in self?.processNextIfPossible() }
+            return
+        }
 
         let url = URL(fileURLWithPath: items[index].localPath)
         cancelPendingCleanup(for: items[index].id)
@@ -342,22 +371,15 @@ final class UploadQueueManager: ObservableObject {
             return
         }
 
-        let stableCloudFileID = items[index].cloudFileID ?? items[index].id
-        items[index].cloudFileID = stableCloudFileID
-        if cloud.index.files.contains(where: { $0.id == stableCloudFileID }) {
-            items[index].state = .completed
-            items[index].completedAt = Date()
-            items[index].lastError = nil
-            persist()
-            DispatchQueue.main.async { [weak self] in self?.processNextIfPossible() }
-            return
-        }
-
         items[index].state = .uploading
         items[index].startedAt = Date()
         items[index].lastError = nil
         activeID = items[index].id
-        persist()
+        guard persist() else {
+            items[index].state = .queued
+            activeID = nil
+            return
+        }
         cloud.lastError = nil
         let expectedCloudFileID = cloud.uploadFile(
             url,
@@ -478,8 +500,12 @@ final class UploadQueueManager: ObservableObject {
     }
 
     private func matchingCloudFile(for item: QueuedUpload) -> CloudFileEntry? {
-        guard let cloudFileID = item.cloudFileID else { return nil }
-        return cloud.index.files.first { $0.id == cloudFileID }
+        let destination = item.photoBackup?.destinationChatID ?? cloud.telegram.savedMessagesChatID
+        return cloud.index.files.first { file in
+            file.isComplete && (file.telegramChatID ?? cloud.telegram.savedMessagesChatID) == destination &&
+            (file.id == (item.cloudFileID ?? item.id) ||
+             (item.photoBackup?.resourceKey != nil && file.sourceKey == item.photoBackup?.resourceKey))
+        }
     }
 
     private var queueRootURL: URL {
@@ -508,13 +534,27 @@ final class UploadQueueManager: ObservableObject {
         guard let url = persistenceURL,
               let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode([QueuedUpload].self, from: data) else { return }
-        items = decoded
+        items = decoded.map { item in
+            var recovered = item
+            if !FileManager.default.fileExists(atPath: recovered.localPath) {
+                let name = URL(fileURLWithPath: recovered.localPath).lastPathComponent
+                recovered.localPath = queueRootURL.appendingPathComponent(recovered.id.uuidString).appendingPathComponent(name).path
+            }
+            return recovered
+        }
     }
 
-    private func persist() {
-        guard let url = persistenceURL,
-              let data = try? JSONEncoder().encode(items) else { return }
-        try? data.write(to: url, options: [.atomic])
+    @discardableResult
+    private func persist() -> Bool {
+        do {
+            guard let url = persistenceURL else { throw CocoaError(.fileWriteUnknown) }
+            try JSONEncoder().encode(items).write(to: url, options: [.atomic])
+            return true
+        } catch {
+            isPaused = true
+            lastError = "Die Warteschlange konnte nicht gespeichert werden. Uploads wurden angehalten: \(error.localizedDescription)"
+            return false
+        }
     }
 
     private func cleanupLocalCopy(for item: QueuedUpload, after delay: TimeInterval = 0) {
@@ -553,3 +593,4 @@ final class UploadQueueManager: ObservableObject {
         }
     }
 }
+

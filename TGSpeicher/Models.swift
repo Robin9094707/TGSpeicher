@@ -188,6 +188,7 @@ struct CloudIndex: Codable {
     var catalogPointerMessageID: Int64?
     var catalogSnapshotMessageID: Int64?
     var lastSyncedAt: Date?
+    var recovery: RecoveryMetadata? = nil
 
     init(
         version: Int = 2,
@@ -210,7 +211,7 @@ struct CloudIndex: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, revision, folders, files, tags, catalogPointerMessageID, catalogSnapshotMessageID, lastSyncedAt
+        case version, revision, folders, files, tags, catalogPointerMessageID, catalogSnapshotMessageID, lastSyncedAt, recovery
     }
 
     init(from decoder: Decoder) throws {
@@ -223,6 +224,7 @@ struct CloudIndex: Codable {
         catalogPointerMessageID = try c.decodeIfPresent(Int64.self, forKey: .catalogPointerMessageID)
         catalogSnapshotMessageID = try c.decodeIfPresent(Int64.self, forKey: .catalogSnapshotMessageID)
         lastSyncedAt = try c.decodeIfPresent(Date.self, forKey: .lastSyncedAt)
+        recovery = try c.decodeIfPresent(RecoveryMetadata.self, forKey: .recovery)
     }
 }
 
@@ -235,6 +237,7 @@ struct CatalogSnapshot: Codable {
     var folders: [CloudFolder]
     var files: [CloudFileEntry]
     var tags: [CloudTag]
+    var recovery: RecoveryMetadata? = nil
 }
 
 struct CatalogPointerPayload: Codable {
@@ -309,3 +312,4 @@ extension URL {
         return Int64(values?.fileSize ?? 0)
     }
 }
+

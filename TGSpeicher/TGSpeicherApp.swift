@@ -15,6 +15,8 @@ struct TGSpeicherApp: App {
         WindowGroup {
             V2RootView(telegram: telegram, cloud: cloud)
                 .tint(.blue)
+                .environment(\.locale, Locale(identifier: "de_DE"))
         }
     }
 }
+

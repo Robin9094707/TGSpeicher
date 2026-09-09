@@ -165,6 +165,7 @@ struct DriveShellV2: View {
             }
             .tabItem { Label("Settings", systemImage: "gearshape.fill") }
         }
+        .safeAreaInset(edge: .top, spacing: 0) { RecoveryStatusBanner(cloud: cloud) }
         .overlay(alignment: .bottom) {
             if let upload = cloud.upload {
                 LiveCompactTransferGlass(progress: upload, telemetry: telemetry)
@@ -203,6 +204,7 @@ private struct LiveCompactTransferGlass: View {
         .padding(.vertical, 11)
         .frame(maxWidth: 560)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .shadow(radius: 10, y: 5)
+        .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
     }
 }
+

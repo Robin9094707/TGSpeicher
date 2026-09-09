@@ -34,14 +34,11 @@ struct SettingsV2: View {
                 LabeledContent("Authorization", value: telegram.lastAuthorizationStateName)
                 Button("Log out from Telegram", systemImage: "rectangle.portrait.and.arrow.right") { telegram.logOut() }
             }
-            Section("Recovery Catalog") {
-                LabeledContent("Status", value: cloud.catalogStatus)
-                LabeledContent("Revision", value: "\(cloud.index.revision)")
-                Button("Sync catalog now", systemImage: "arrow.up.doc.on.clipboard") { cloud.syncCatalogNow() }.disabled(cloud.isCatalogSyncing)
-                Button("Fast restore / refresh", systemImage: "bolt.fill") { cloud.bootstrapFromTelegram() }.disabled(cloud.isRefreshing)
-                Button("Full recovery scan", systemImage: "magnifyingglass") { cloud.fullRebuildFromTelegram() }.disabled(cloud.isRefreshing)
-                TextField("Catalog pointer message ID", text: $recoveryMessageID).keyboardType(.numberPad)
-                Button("Restore from message ID", systemImage: "arrow.down.doc") { cloud.restoreFromCatalogPointer(recoveryMessageID) }.disabled(recoveryMessageID.isEmpty)
+            Section("Datensicherung") {
+                NavigationLink { RecoveryCenterView(cloud: cloud) } label: {
+                    Label("Sichern & Wiederherstellen", systemImage: "checkmark.shield")
+                }
+                Text(cloud.catalogStatus).font(.footnote).foregroundStyle(.secondary)
             }
             Section("Network") {
                 LabeledContent("Connection", value: network.isConnected ? network.interfaceName : "Offline")
@@ -166,3 +163,4 @@ extension CloudFileEntry {
         return ext.isEmpty ? "File" : ext.uppercased() + " file"
     }
 }
+
