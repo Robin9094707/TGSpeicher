@@ -87,6 +87,7 @@ struct MusicLibraryView: View {
                 if music.isScanningMetadata {
                     HStack { ProgressView(); Text(music.metadataStatus).font(.caption); Spacer(); Button("Stoppen") { music.cancelMetadataScan() } }
                 } else {
+                    if !music.metadataStatus.isEmpty { Text(music.metadataStatus).font(.caption).foregroundStyle(.secondary) }
                     Button("Metadaten einlesen", systemImage: "sparkle.magnifyingglass") { music.scanMetadata() }
                         .disabled(music.availableFiles.isEmpty || !cloud.recoveryReady)
                 }

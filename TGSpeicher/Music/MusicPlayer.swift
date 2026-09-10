@@ -43,6 +43,7 @@ final class MusicPlayer: ObservableObject {
     private var lastSaved = Date.distantPast
     private var unshuffled: [UUID] = []
     private var interruptedPlayback = false
+    private var offlineGeneration = UUID()
     private var offlineRequest: (file: CloudFileEntry, account: Int64)?
     private var resumeOffset: Double?
 
@@ -54,6 +55,7 @@ final class MusicPlayer: ObservableObject {
 
     init(cloud: CloudStore, telegram: TelegramClient) {
         self.cloud = cloud; self.telegram = telegram
+        covers.countLimit = 64; covers.totalCostLimit = 32 * 1024 * 1024
         player.automaticallyWaitsToMinimizeStalling = true
         periodic = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -116,7 +118,7 @@ final class MusicPlayer: ObservableObject {
         catch { self.error = "Die Audioausgabe konnte nicht aktiviert werden: \(error.localizedDescription)" }
     }
 
-    func pause() { player.pause(); isPlaying = false; isBuffering = false; saveSession(); updateNowPlaying() }
+    func pause() { interruptedPlayback = false; player.pause(); isPlaying = false; isBuffering = false; saveSession(); updateNowPlaying() }
     func next() {
         guard !offlineBusy else { return }
         if advancePlayable(manual: true) { loadCurrent(autoplay: true) }
@@ -231,12 +233,12 @@ final class MusicPlayer: ObservableObject {
                 let result = await MusicMetadata.read(asset)
                 guard !Task.isCancelled, let self, self.generation == token, self.canAccess else { return }
                 if let seconds = result.info.duration { self.duration = seconds }
-                if let cover = result.artwork { self.artwork = cover; self.covers.setObject(cover, forKey: file.id.uuidString as NSString) }
+                if let cover = result.artwork { self.artwork = cover; self.cacheCover(cover, id: file.id) }
                 var info = result.info
                 if info.title == nil { info.title = self.cloud.musicLibrary.tracks[file.id]?.title }
                 if info.artist == nil { info.artist = self.cloud.musicLibrary.tracks[file.id]?.artist }
                 if info.album == nil { info.album = self.cloud.musicLibrary.tracks[file.id]?.album }
-                self.storeMetadata(info, id: file.id)
+                if info.duration != nil || !info.details.isEmpty { self.storeMetadata(info, id: file.id) }
                 self.updateNowPlaying()
             }
             saveSession(); updateNowPlaying()
@@ -278,7 +280,7 @@ final class MusicPlayer: ObservableObject {
         resource?.stop(); resource = nil; itemObservation = nil
         player.pause(); player.replaceCurrentItem(with: nil)
         isPlaying = false; isBuffering = false; artwork = nil; elapsed = 0; duration = 0
-        offlineRequest = nil; offlineBusy = false; error = nil; showingPlayer = false
+        offlineGeneration = UUID(); offlineRequest = nil; offlineBusy = false; error = nil; showingPlayer = false
         setSleep(minutes: nil)
         if clearQueue { queue = MusicQueue(); unshuffled = []; shuffle = false; rate = 1 }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -316,7 +318,7 @@ final class MusicPlayer: ObservableObject {
             Task { @MainActor in
                 guard let self, let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                       let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-                if type == .began { self.interruptedPlayback = self.player.timeControlStatus != .paused; self.pause() }
+                if type == .began { let resume = self.player.timeControlStatus != .paused; self.pause(); self.interruptedPlayback = resume }
                 else {
                     let rawOptions = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                     let resume = self.interruptedPlayback && AVAudioSession.InterruptionOptions(rawValue: rawOptions).contains(.shouldResume)
@@ -382,6 +384,10 @@ final class MusicPlayer: ObservableObject {
         let info = cloud.musicLibrary.tracks[file.id]
         return [file.name, info?.title ?? "", info?.artist ?? "", info?.album ?? ""].contains { $0.localizedStandardContains(search) }
     }
+    private func cacheCover(_ cover: UIImage, id: UUID) {
+        let cost = cover.cgImage.map { $0.bytesPerRow * $0.height } ?? 2_560_000
+        covers.setObject(cover, forKey: id.uuidString as NSString, cost: cost)
+    }
     func cover(for id: UUID) -> UIImage? { id == queue.current ? artwork : covers.object(forKey: id.uuidString as NSString) }
     private func storeMetadata(_ info: MusicTrackInfo, id: UUID) {
         if let old = cloud.musicLibrary.tracks[id], old.title == info.title, old.artist == info.artist,
@@ -395,7 +401,6 @@ final class MusicPlayer: ObservableObject {
     func scanMetadata() {
         guard canAccess, let accountID, !isScanningMetadata, !offlineBusy else { return }
         isScanningMetadata = true
-        covers.countLimit = 150
         let files = availableFiles
         scanTask = Task { [weak self] in
             guard let self else { return }
@@ -418,11 +423,12 @@ final class MusicPlayer: ObservableObject {
                         if !Task.isCancelled { asset.cancelLoading(); loader?.stop() }
                     }
                     let result = await MusicMetadata.read(asset)
-                    timeout.cancel(); loader?.stop(); self.scanResource = nil; self.scanAsset = nil
+                    timeout.cancel(); loader?.stop()
                     guard !Task.isCancelled, self.canAccess, self.accountID == accountID else { return }
+                    self.scanResource = nil; self.scanAsset = nil
                     if result.info.duration != nil || !result.info.details.isEmpty { self.storeMetadata(result.info, id: file.id) }
                     else { skipped += 1 }
-                    if let cover = result.artwork { self.covers.setObject(cover, forKey: file.id.uuidString as NSString); self.objectWillChange.send() }
+                    if let cover = result.artwork { self.cacheCover(cover, id: file.id); self.objectWillChange.send() }
                 } catch { skipped += 1 }
             }
             self.isScanningMetadata = false
@@ -447,16 +453,17 @@ final class MusicPlayer: ObservableObject {
         cancelMetadataScan()
         pause(); generation = UUID(); metadataTask?.cancel(); resource?.stop(); resource = nil
         player.replaceCurrentItem(with: nil)
-        offlineBusy = true; offlineRequest = (file, accountID)
+        offlineGeneration = UUID(); offlineBusy = true; offlineRequest = (file, accountID)
         cloud.lastDownloadedFileID = nil
         cloud.downloadAndReassemble(file)
     }
     private func completeOfflineDownload() {
-        guard let request = offlineRequest else { return }
+        guard !cloud.isDownloading, let request = offlineRequest else { return }
         offlineRequest = nil
         guard request.account == accountID, cloud.lastDownloadedFileID == request.file.id,
               let source = cloud.lastExportURL else { offlineBusy = false; return }
         let destination = offlineDestination(request.file, account: request.account)
+        let token = offlineGeneration
         Task { [weak self] in
             let result: Result<Void, Error> = await Task.detached(priority: .utility) {
                 do {
@@ -473,11 +480,20 @@ final class MusicPlayer: ObservableObject {
                     return .success(())
                 } catch { return .failure(error) }
             }.value
-            guard let self, self.accountID == request.account else { return }
+            guard let self, self.accountID == request.account, self.offlineGeneration == token else { return }
             self.offlineBusy = false; self.offlineRevision += 1
             if case .failure(let error) = result { self.error = error.localizedDescription }
         }
     }
+    deinit {
+        metadataTask?.cancel(); scanTask?.cancel()
+        resource?.stop(); scanResource?.stop()
+        sleepTimer?.invalidate()
+        if let periodic { player.removeTimeObserver(periodic) }
+        notifications.forEach { NotificationCenter.default.removeObserver($0) }
+        commands.forEach { $0.0.removeTarget($0.1) }
+    }
+
     func removeCurrentOffline() {
         guard let file = currentFile, let url = offlineURL(for: file), !offlineBusy else { return }
         pause(); player.replaceCurrentItem(with: nil)

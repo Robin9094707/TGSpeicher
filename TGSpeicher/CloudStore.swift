@@ -936,7 +936,7 @@ final class CloudStore: ObservableObject {
             let info = self.mediaFileInfo(fromMessage: message)
             guard let fileID = info.fileID else {
                 self.isDownloading = false
-                self.lastError = "Telegram message \(messageID) no longer contains chunk \(chunk.index)."
+                self.lastError = "Die Telegram-Nachricht \(messageID) enthält den Dateiteil \(chunk.index) nicht mehr."
                 return
             }
             chunk.telegramFileID = fileID
@@ -1174,6 +1174,10 @@ final class CloudStore: ObservableObject {
         guard let content = message["content"] as? [String: Any] else { return (nil, nil, 0) }
         let file: [String: Any]?
         switch content["@type"] as? String {
+        case "messageAudio":
+            file = ((content["audio"] as? [String: Any])?["audio"] as? [String: Any])
+        case "messageVoiceNote":
+            file = ((content["voice_note"] as? [String: Any])?["voice"] as? [String: Any])
         case "messageVideo":
             file = ((content["video"] as? [String: Any])?["video"] as? [String: Any])
         case "messagePhoto":
