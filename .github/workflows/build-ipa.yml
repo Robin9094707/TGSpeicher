@@ -17,17 +17,21 @@ concurrency:
 jobs:
   build:
     name: Build unsigned IPA
-    runs-on: xcode-27
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
       - name: Show toolchain
         run: |
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
           sw_vers
 
       - name: Test recovery and upload journal
@@ -66,9 +70,8 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="build/Build/Products/Release-iphoneos/TGSpeicher.app"
-          IPA_NAME="TGSpeicher-v3.3.0-unsigned.ipa"
+          IPA_NAME="TGSpeicher-v3.2.0-unsigned.ipa"
           test -d "$APP_PATH"
-          test -d "$APP_PATH/PlugIns/TGSpeicherBackgroundUpload.appex"
           rm -rf Payload
           mkdir Payload
           cp -R "$APP_PATH" Payload/TGSpeicher.app
@@ -79,8 +82,8 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v3.3.0-unsigned-IPA
-          path: TGSpeicher-v3.3.0-unsigned.ipa
+          name: TGSpeicher-v3.2.0-unsigned-IPA
+          path: TGSpeicher-v3.2.0-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
 
@@ -88,7 +91,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v3.3.0-build-log
+          name: TGSpeicher-v3.2.0-build-log
           path: xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
+

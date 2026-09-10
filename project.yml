@@ -18,9 +18,6 @@ targets:
     dependencies:
       - package: TDLibFramework
         product: TDLibFramework
-      - target: BackgroundUploadExtension
-        embed: true
-        codeSign: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.simplexsmp.tgspeicher
@@ -28,35 +25,12 @@ targets:
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_FILE: TGSpeicher/Info.plist
-        CODE_SIGN_ENTITLEMENTS: TGSpeicher/TGSpeicher.entitlements
-        CURRENT_PROJECT_VERSION: 33
+        CURRENT_PROJECT_VERSION: 32
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: 3.3.0
+        MARKETING_VERSION: 3.2.0
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
     scheme:
       testTargets: []
       gatherCoverageData: false
 
-  BackgroundUploadExtension:
-    type: app-extension
-    platform: iOS
-    deploymentTarget: "27.0"
-    sources:
-      - path: BackgroundUploadExtension
-      - path: TGSpeicher/BackgroundRelayShared.swift
-    settings:
-      base:
-        IPHONEOS_DEPLOYMENT_TARGET: "27.0"
-        PRODUCT_BUNDLE_IDENTIFIER: eu.simplexsmp.tgspeicher.backgroundupload
-        PRODUCT_NAME: TGSpeicherBackgroundUpload
-        SWIFT_VERSION: 5.0
-        TARGETED_DEVICE_FAMILY: "1,2"
-        INFOPLIST_FILE: BackgroundUploadExtension/Info.plist
-        CODE_SIGN_ENTITLEMENTS: BackgroundUploadExtension/BackgroundUploadExtension.entitlements
-        CURRENT_PROJECT_VERSION: 33
-        MARKETING_VERSION: 3.3.0
-        CODE_SIGN_STYLE: Automatic
-        GENERATE_INFOPLIST_FILE: NO
-        APPLICATION_EXTENSION_API_ONLY: YES
-        SKIP_INSTALL: YES

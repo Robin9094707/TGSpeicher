@@ -50,9 +50,6 @@ struct SettingsV2: View {
                 NavigationLink { RecoveryCenterView(cloud: cloud) } label: {
                     Label("Sichern & Wiederherstellen", systemImage: "checkmark.shield")
                 }
-                NavigationLink { BackgroundRelaySettingsView(cloud: cloud) } label: {
-                    Label("Hintergrundsicherung", systemImage: "arrow.triangle.2.circlepath.icloud.fill")
-                }
                 Text(cloud.catalogStatus).font(.footnote).foregroundStyle(.secondary)
             }
             Section("Netzwerk") {
