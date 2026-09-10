@@ -70,7 +70,16 @@ struct V2RootView: View {
         .environmentObject(channel)
         .preferredColorScheme(preferences.appearance.colorScheme)
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { telegram.refreshUploadLimits(); music.refreshOfflineLibrary(); handleShortcut() }
+            if phase == .active {
+                telegram.refreshUploadLimits()
+                music.refreshOfflineLibrary()
+                handleShortcut()
+            } else {
+                // Metadata prefetch is opportunistic work. It must never compete with
+                // real AVPlayer background playback or keep Telegram range loaders alive
+                // while iOS is transitioning the process out of the foreground.
+                music.cancelMetadataScan()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .uploadShortcutRequested)) { _ in handleShortcut() }
         .onChange(of: cloud.recoveryReady) { _, ready in if ready { handleShortcut() } }
@@ -252,5 +261,3 @@ private struct LiveCompactTransferGlass: View {
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
     }
 }
-
-
