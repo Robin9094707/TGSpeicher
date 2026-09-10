@@ -101,6 +101,7 @@ struct RecoveryTests {
         let merged = library.merging(changed)
         check(merged.channel?.chatID == nil && merged.playlists == library.playlists, "disabling music channel keeps playlists and wins over stale selection")
         let file = CloudFileEntry(id: id, name: "Titel.mp3", totalSize: 100,
+            createdAt: Date(timeIntervalSince1970: 1000), modifiedAt: Date(timeIntervalSince1970: 1001),
             chunks: [CloudChunk(index: 1, count: 1, telegramMessageID: 1 << 20, telegramFileID: nil, remoteUniqueID: nil, size: 100, storedName: "Titel.mp3")],
             mimeType: "audio/mpeg", telegramChatID: -10077, storageKind: "nativeAudio")
         let snapshot = CatalogSnapshot(revision: 1, createdAt: Date(), folders: [], files: [file], tags: [], recovery: RecoveryMetadata(accountID: 99, music: merged))
