@@ -9,10 +9,12 @@ struct SettingsV2: View {
     @ObservedObject var network: TGNetworkMonitor
     @ObservedObject var proxy: TGProxyManager
     let runtime: TransferRuntime
+    var overview: AnyView? = nil
     @State private var recoveryMessageID = ""
     @State private var confirmReset = false
     var body: some View {
         Form {
+            if let overview { Section { NavigationLink { overview } label: { Label("Speicherübersicht", systemImage: "chart.bar.xaxis") } } }
             Section("Darstellung") {
                 Picker("Darstellung", selection: $preferences.appearance) { ForEach(TGAppearance.allCases) { Text($0.label).tag($0) } }
                 Picker("Standardansicht", selection: $preferences.driveViewMode) { ForEach(TGDriveViewMode.allCases) { Label($0.label, systemImage: $0.icon).tag($0) } }

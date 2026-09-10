@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 
+@MainActor
 struct V2RootView: View {
     @ObservedObject var telegram: TelegramClient
     @ObservedObject var cloud: CloudStore
@@ -14,6 +15,7 @@ struct V2RootView: View {
     @StateObject private var runtime: TransferRuntime
     @StateObject private var telemetry: TelegramTransferTelemetry
     @StateObject private var usageScanner: TelegramUsageScanner
+    @StateObject private var music: MusicPlayer
     @StateObject private var photoBackup: PhotoBackupManager
 
     init(telegram: TelegramClient, cloud: CloudStore) {
@@ -22,6 +24,7 @@ struct V2RootView: View {
         let preferences = AppPreferences()
         let network = TGNetworkMonitor()
         let queue = UploadQueueManager(cloud: cloud, preferences: preferences, network: network)
+        _music = StateObject(wrappedValue: MusicPlayer(cloud: cloud, telegram: telegram))
         _preferences = StateObject(wrappedValue: preferences)
         _queue = StateObject(wrappedValue: queue)
         _remoteImporter = StateObject(wrappedValue: RemoteURLImporter())
@@ -55,6 +58,7 @@ struct V2RootView: View {
                 LoginView(telegram: telegram)
             }
         }
+        .environmentObject(music)
         .preferredColorScheme(preferences.appearance.colorScheme)
         .onChange(of: scenePhase) { _, phase in if phase == .active { telegram.refreshUploadLimits() } }
         .alert("Telegram", isPresented: Binding(
@@ -105,6 +109,7 @@ struct V2RootView: View {
 }
 
 struct DriveShellV2: View {
+    @EnvironmentObject private var music: MusicPlayer
     @ObservedObject var telegram: TelegramClient
     @ObservedObject var cloud: CloudStore
     @ObservedObject var preferences: AppPreferences
@@ -129,30 +134,26 @@ struct DriveShellV2: View {
                     remoteImporter: remoteImporter
                 )
             }
+            .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
             .tabItem { Label("Dateien", systemImage: "externaldrive.fill.badge.icloud") }
 
             NavigationStack {
                 PhotoBackupView(manager: photoBackup, cloud: cloud, telemetry: telemetry)
             }
+            .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
             .tabItem { Label("Fotos", systemImage: "photo.stack.fill") }
 
             NavigationStack {
                 TransfersViewV2(cloud: cloud, queue: queue, remoteImporter: remoteImporter, telemetry: telemetry)
             }
+            .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
             .tabItem { Label("Übertragungen", systemImage: "arrow.up.arrow.down.circle.fill") }
 
             NavigationStack {
-                OverviewV2(
-                    telegram: telegram,
-                    cloud: cloud,
-                    network: network,
-                    queue: queue,
-                    telemetry: telemetry,
-                    usageScanner: usageScanner,
-                    photoBackup: photoBackup
-                )
+                MusicLibraryView(cloud: cloud)
             }
-            .tabItem { Label("Übersicht", systemImage: "chart.bar.xaxis") }
+            .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
+            .tabItem { Label("Musik", systemImage: "music.note") }
 
             NavigationStack {
                 SettingsV2(
@@ -162,22 +163,25 @@ struct DriveShellV2: View {
                     queue: queue,
                     network: network,
                     proxy: proxy,
-                    runtime: runtime
+                    runtime: runtime,
+                    overview: AnyView(OverviewV2(telegram: telegram, cloud: cloud, network: network, queue: queue, telemetry: telemetry, usageScanner: usageScanner, photoBackup: photoBackup))
                 )
             }
+            .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
             .tabItem { Label("Einstellungen", systemImage: "gearshape.fill") }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 4) { RecoveryStatusBanner(cloud: cloud); DeletionStatusBanner(cloud: cloud) }
         }
         .overlay(alignment: .bottom) {
-            if let upload = cloud.upload {
-                LiveCompactTransferGlass(progress: upload, telemetry: telemetry)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 58)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            VStack(spacing: 8) {
+                if let upload = cloud.upload { LiveCompactTransferGlass(progress: upload, telemetry: telemetry) }
+                if music.queue.current != nil { MusicMiniPlayer() }
             }
+            .padding(.horizontal, 14).padding(.bottom, 58)
         }
+        .sheet(isPresented: $music.showingPlayer) { MusicPlayerSheet().environmentObject(music) }
+        .onChange(of: music.error) { _, error in if error != nil { music.showingPlayer = true } }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: cloud.upload)
     }
 }
