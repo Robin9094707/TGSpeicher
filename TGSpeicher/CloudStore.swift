@@ -417,8 +417,8 @@ final class CloudStore: ObservableObject {
                 "@type": "inputMessageAudio",
                 "audio": ["@type": "inputFileLocal", "path": url.path],
                 "album_cover_thumbnail": NSNull(), "duration": descriptor.duration,
-                "title": descriptor.title ?? (url.lastPathComponent as NSString).deletingPathExtension,
-                "performer": descriptor.performer ?? "", "caption": caption
+                "title": String((descriptor.title ?? (url.lastPathComponent as NSString).deletingPathExtension).prefix(64)),
+                "performer": String((descriptor.performer ?? "").prefix(64)), "caption": caption
             ]
         } else if descriptor.kind == "video" {
             content = [

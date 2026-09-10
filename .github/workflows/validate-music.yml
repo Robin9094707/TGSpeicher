@@ -31,6 +31,9 @@ jobs:
           xcodebuild -version
           sw_vers
 
+      - name: Parse Swift sources
+        run: find TGSpeicher Shared TGSpeicherLiveActivity -name '*.swift' -print0 | xargs -0 -n 1 swiftc -frontend -parse
+
       - name: Test recovery and upload journal
         run: |
           swiftc TGSpeicher/UploadQueueModels.swift TGSpeicher/Integrations/ConfirmationPolicy.swift TGSpeicher/Models.swift TGSpeicher/Music/MusicModels.swift TGSpeicher/Recovery/RecoveryCore.swift TGSpeicher/Recovery/DurableOutbox.swift TGSpeicher/Recovery/UploadPolicy.swift TGSpeicher/Recovery/DurableDeletionQueue.swift TGSpeicher/Chunker.swift Tests/RecoveryTests.swift -o /tmp/tgs-recovery-tests

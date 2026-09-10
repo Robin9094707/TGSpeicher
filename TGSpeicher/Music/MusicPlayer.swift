@@ -417,6 +417,7 @@ final class MusicPlayer: ObservableObject {
         return covers.object(forKey: id.uuidString as NSString)
     }
     private func storeMetadata(_ value: MusicTrackInfo, id: UUID) {
+        guard cloud.recoveryReady, !cloud.isRefreshing else { return }
         var info = value
         if let old = cloud.musicLibrary.tracks[id] {
             info.title = info.title ?? old.title; info.artist = info.artist ?? old.artist

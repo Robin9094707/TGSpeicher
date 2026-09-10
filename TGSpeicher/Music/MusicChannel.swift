@@ -32,7 +32,9 @@ final class MusicChannelManager: ObservableObject {
         return cloud.index.files.filter { $0.isMusic && $0.isComplete && $0.telegramChatID == chat }
     }
     func select(_ channel: TelegramBackupDestination?) {
-        guard cloud.editMusic({ $0.channel = MusicChannelChoice(chatID: channel?.id, title: String((channel?.title ?? "Kein Musikkanal").prefix(200))) }) else { return }
+        let editedAt = max(Date().timeIntervalSince1970, (choice?.updatedAt ?? 0).nextUp)
+        guard cloud.editMusic({ $0.channel = MusicChannelChoice(chatID: channel?.id,
+            title: String((channel?.title ?? "Kein Musikkanal").prefix(200)), updatedAt: editedAt) }) else { return }
         status = channel == nil ? "Musikkanal deaktiviert · vorhandene Titel bleiben erhalten" : "Musikkanal ausgewählt"
         scheduleSync()
     }

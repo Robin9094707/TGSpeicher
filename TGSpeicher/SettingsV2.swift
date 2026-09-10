@@ -29,6 +29,10 @@ struct SettingsV2: View {
                 Toggle("Nur über WLAN hochladen", isOn: $preferences.wifiOnlyUploads)
                 Button("Mitteilungen erlauben", systemImage: "bell.badge") { runtime.requestNotificationPermission() }
                 NavigationLink("Offline-Dateien", destination: LocalDownloadsView())
+                Text("Live Activities zeigen Uploads auf dem Sperrbildschirm und in der Dynamic Island. Ab iOS 26 kann iOS zusätzliche Hintergrundzeit gewähren. Beim erzwungenen Beenden stoppt die Übertragung.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Kurzbefehle: Fotosicherung starten (optional Nachtmodus), Datei-Eingang hochladen und Uploads fortsetzen. Die Aktionen öffnen diese App.")
+                    .font(.caption).foregroundStyle(.secondary)
                 LabeledContent("Wartende Uploads", value: "\(queue.queuedCount)")
             }
             Section {

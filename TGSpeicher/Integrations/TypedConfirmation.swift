@@ -25,5 +25,6 @@ struct TypedConfirmationSheet: View {
                 }
             }.navigationTitle("Sicher bestätigen")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
+        }
     }
 }
