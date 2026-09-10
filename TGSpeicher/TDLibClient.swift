@@ -8,7 +8,30 @@ final class TelegramClient: ObservableObject {
     @Published private(set) var accountName = "Telegram"
     @Published private(set) var savedMessagesChatID: Int64?
     @Published private(set) var writableBackupChannels: [TelegramBackupDestination] = []
-    @Published private(set) var maxUploadBytes: Int64 = 2_000_000_000
+    @Published private(set) var maxUploadBytes: Int64 = UploadPolicy.standardBytes
+    @Published private(set) var isPremium: Bool?
+    @Published private(set) var isCheckingUploadLimits = false
+    @Published private(set) var uploadLimitStatus = "Kontostatus wird geprüft …"
+    @Published var usePremiumUploads = UserDefaults.standard.object(forKey: "transfer.use-premium-size.v1") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(usePremiumUploads, forKey: "transfer.use-premium-size.v1")
+            maxUploadBytes = uploadPolicy.bytes(usePremium: usePremiumUploads)
+        }
+    }
+    private var uploadPolicy = UploadPolicy()
+    private var ownUserID: Int64?
+    private var lastLimitRefresh = Date.distantPast
+
+    var premiumLabel: String { isPremium.map { $0 ? "Telegram Premium" : "Telegram Standard" } ?? "Noch nicht erkannt" }
+
+    func resolveUploadLayout(fileID: UUID, chatID: Int64, total: Int64, nativeKind: String?, partial: CloudFileEntry?) throws -> UploadLayout {
+        try durableOutbox.uploadLayout(fileID: fileID, chatID: chatID, total: total,
+            limit: maxUploadBytes, nativeKind: nativeKind, partial: partial)
+    }
+
+    func switchToDocumentLayout(fileID: UUID, chatID: Int64, total: Int64) throws {
+        try durableOutbox.useDocumentLayout(fileID: fileID, chatID: chatID, total: total, limit: maxUploadBytes)
+    }
     @Published private(set) var loginCodeInfo: LoginCodeInfo?
     @Published private(set) var debugLines: [String] = []
     @Published private(set) var lastAuthorizationStateName = "Noch nicht gestartet"
@@ -111,6 +134,7 @@ final class TelegramClient: ObservableObject {
         try? fm.removeItem(at: fm.temporaryDirectory.appendingPathComponent("TGSpeicherChunks", isDirectory: true))
         try? fm.removeItem(at: fm.temporaryDirectory.appendingPathComponent("TGSpeicherExports", isDirectory: true))
 
+        resetUploadLimits()
         accountName = "Telegram"
         savedMessagesChatID = nil
         loginCodeInfo = nil
@@ -137,6 +161,7 @@ final class TelegramClient: ObservableObject {
         guard activeClientID == nil else { return }
         guard hasAPICredentials else { authorizationStage = .apiCredentials; return }
 
+        resetUploadLimits()
         authorizationStage = .connecting
         loginCodeInfo = nil
         lastError = nil
@@ -288,7 +313,10 @@ final class TelegramClient: ObservableObject {
 
     func send(_ request: [String: Any], completion: (([String: Any]) -> Void)? = nil) {
         guard let id = activeClientID else {
-            DispatchQueue.main.async { self.lastError = "Telegram ist noch nicht verbunden." }
+            DispatchQueue.main.async {
+                self.lastError = "Telegram ist noch nicht verbunden."
+                completion?(DurableOutbox.error("Telegram ist noch nicht verbunden."))
+            }
             return
         }
 
@@ -409,13 +437,43 @@ final class TelegramClient: ObservableObject {
         }
     }
 
-    private func loadUploadLimit() {
-        send(["@type": "getOption", "name": "max_file_size"]) { [weak self] response in
-            guard let self,
-                  response["@type"] as? String == "optionValueInteger",
-                  let value = Self.int64(response["value"]), value > 0 else { return }
-            self.maxUploadBytes = value
+    func refreshUploadLimits(force: Bool = false) {
+        guard authorizationStage == .ready, !isCheckingUploadLimits,
+              force || Date().timeIntervalSince(lastLimitRefresh) > 300 else { return }
+        let generation = startGeneration
+        isCheckingUploadLimits = true
+        uploadLimitStatus = "Kontostatus wird geprüft …"
+        send(["@type": "getMe"]) { [weak self] me in
+            guard let self, self.startGeneration == generation, self.authorizationStage == .ready else { return }
+            self.isCheckingUploadLimits = false
+            if me["@type"] as? String == "user", let id = Self.int64(me["id"]),
+               self.ownUserID == nil || self.ownUserID == id, let premium = me["is_premium"] as? Bool {
+                self.ownUserID = id
+                self.applyPremium(premium)
+                self.lastLimitRefresh = Date()
+            } else {
+                self.uploadLimitStatus = "Prüfung nicht möglich; die zuletzt erkannte Grenze bleibt aktiv."
+            }
         }
+        send(["@type": "getApplicationConfig"]) { [weak self] response in
+            guard let self, self.startGeneration == generation, self.authorizationStage == .ready else { return }
+            self.uploadPolicy.applyConfiguration(response)
+            self.maxUploadBytes = self.uploadPolicy.bytes(usePremium: self.usePremiumUploads)
+        }
+    }
+
+    private func applyPremium(_ value: Bool) {
+        isPremium = value
+        uploadPolicy.isPremium = value
+        maxUploadBytes = uploadPolicy.bytes(usePremium: usePremiumUploads)
+        uploadLimitStatus = "Automatisch von Telegram erkannt"
+    }
+
+    private func resetUploadLimits() {
+        ownUserID = nil; isPremium = nil; uploadPolicy = UploadPolicy()
+        maxUploadBytes = UploadPolicy.standardBytes
+        lastLimitRefresh = .distantPast; isCheckingUploadLimits = false
+        uploadLimitStatus = "Kontostatus wird geprüft …"
     }
 
     static func retryAfterSeconds(_ response: [String: Any]) -> Int? {
@@ -478,6 +536,19 @@ final class TelegramClient: ObservableObject {
         switch type {
         case "updateAuthorizationState":
             if let state = response["authorization_state"] as? [String: Any] { handleAuthorizationState(state) }
+
+        case "updateOption":
+            if response["name"] as? String == "is_premium",
+               let value = response["value"] as? [String: Any],
+               value["@type"] as? String == "optionValueBoolean", let premium = value["value"] as? Bool {
+                DispatchQueue.main.async { if self.authorizationStage == .ready { self.applyPremium(premium) } }
+            }
+
+        case "updateUser":
+            if let user = response["user"] as? [String: Any], let id = Self.int64(user["id"]),
+               let premium = user["is_premium"] as? Bool {
+                DispatchQueue.main.async { if id == self.ownUserID { self.applyPremium(premium) } }
+            }
 
         case "updateMessageSendSucceeded":
             if let oldID = Self.int64(response["old_message_id"]), let message = response["message"] as? [String: Any] {
@@ -570,7 +641,7 @@ final class TelegramClient: ObservableObject {
             loadSelfAndSavedMessages()
 
         case "authorizationStateClosing", "authorizationStateLoggingOut":
-            DispatchQueue.main.async { self.authorizationStage = .connecting }
+            DispatchQueue.main.async { self.resetUploadLimits(); self.savedMessagesChatID = nil; self.authorizationStage = .connecting }
 
         case "authorizationStateClosed":
             tdlibParametersConfigured = false
@@ -681,17 +752,20 @@ final class TelegramClient: ObservableObject {
     }
 
     private func loadSelfAndSavedMessages() {
-        loadUploadLimit()
+        let generation = startGeneration
         refreshWritableBackupChannels()
         send(["@type": "getMe"]) { [weak self] me in
-            guard let self else { return }
+            guard let self, self.startGeneration == generation, self.authorizationStage == .ready else { return }
             if me["@type"] as? String == "error" { self.surfaceError(me); return }
             let first = me["first_name"] as? String ?? ""
             let last = me["last_name"] as? String ?? ""
             self.accountName = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
             guard let userID = Self.int64(me["id"]) else { return }
+            self.ownUserID = userID
+            if let premium = me["is_premium"] as? Bool { self.applyPremium(premium) }
+            self.refreshUploadLimits(force: true)
             self.send(["@type": "createPrivateChat", "user_id": userID, "force": false]) { [weak self] chat in
-                guard let self else { return }
+                guard let self, self.startGeneration == generation, self.authorizationStage == .ready else { return }
                 if chat["@type"] as? String == "error" { self.surfaceError(chat); return }
                 self.savedMessagesChatID = Self.int64(chat["id"])
                 self.debug("Saved Messages ready")
@@ -703,7 +777,7 @@ final class TelegramClient: ObservableObject {
         guard response["@type"] as? String == "error" else { return }
         let raw = response["message"] as? String ?? "Unbekannter Telegram-Fehler"
         debug("TDLib error: \(raw)")
-        let friendly = Self.retryAfterSeconds(response).map { "Telegram rate limit: please wait about \($0) seconds." }
+        let friendly = Self.retryAfterSeconds(response).map { "Telegram-Pause: Bitte etwa \($0) Sekunden warten." }
             ?? raw.replacingOccurrences(of: "_", with: " ")
         DispatchQueue.main.async { self.lastError = friendly }
     }

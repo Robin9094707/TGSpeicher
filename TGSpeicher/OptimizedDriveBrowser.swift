@@ -317,50 +317,35 @@ struct OptimizedDriveBrowserV2: View {
                 onCancel: clearRenameState
             )
         }
-        .confirmationDialog("\(selectedFiles.count) ausgewählte Dateien aus Telegram löschen?", isPresented: $confirmBulkDelete, titleVisibility: .visible) {
-            Button("Aus Telegram löschen", role: .destructive) {
-                let entries = selectedEntries
-                selectedFiles.removeAll(); isSelecting = false
-                entries.forEach(cloud.deleteFileFromTelegram)
+        .confirmationDialog("Aus Telegram löschen?", isPresented: Binding(
+            get: { pendingDeleteFile != nil || pendingDeleteFolder != nil || confirmBulkDelete },
+            set: { if !$0 { pendingDeleteFile = nil; pendingDeleteFolder = nil; confirmBulkDelete = false } }
+        ), titleVisibility: .visible, presenting: deletionSelection) { selection in
+            if let folder = selection.folder {
+                Button("„\(folder.name)“ löschen", role: .destructive) { cloud.deleteFolder(folder) }
+                    .disabled(!folderIsEmpty(folder))
+            } else {
+                Button(selection.files.count == 1 ? "Datei dauerhaft löschen" : "\(selection.files.count) Dateien dauerhaft löschen", role: .destructive) {
+                    cloud.deleteFilesFromTelegram(selection.files)
+                    selectedFiles.removeAll(); isSelecting = false
+                }
             }
             Button("Abbrechen", role: .cancel) { }
-        }
-        .confirmationDialog(
-            "„\(pendingDeleteFolder?.name ?? "Ordner")“ löschen?",
-            isPresented: Binding(
-                get: { pendingDeleteFolder != nil },
-                set: { if !$0 { pendingDeleteFolder = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let folder = pendingDeleteFolder, folderIsEmpty(folder) {
-                Button("Leeren Ordner löschen", role: .destructive) {
-                    cloud.deleteFolder(folder)
-                    pendingDeleteFolder = nil
-                }
+        } message: { selection in
+            if selection.folder != nil {
+                Text("Nur leere Ordner lassen sich löschen. Die Änderung wird im Telegram-Katalog gesichert.")
+            } else {
+                Text("Alle zugehörigen Telegram-Nachrichten werden dauerhaft gelöscht. Originale auf dem iPhone bleiben erhalten. Die automatische Fotosicherung überspringt bewusst gelöschte Medien künftig in diesem Kanal.")
             }
-            Button("Abbrechen", role: .cancel) { pendingDeleteFolder = nil }
-        } message: {
-            Text("Es lassen sich nur leere Ordner löschen. Die Änderung wird im Telegram-Katalog gesichert.")
         }
-        .confirmationDialog(
-            "„\(pendingDeleteFile?.name ?? "Datei")“ aus Telegram löschen?",
-            isPresented: Binding(
-                get: { pendingDeleteFile != nil },
-                set: { if !$0 { pendingDeleteFile = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let file = pendingDeleteFile {
-                Button("Aus Telegram löschen", role: .destructive) {
-                    cloud.deleteFileFromTelegram(file)
-                    pendingDeleteFile = nil
-                }
-            }
-            Button("Abbrechen", role: .cancel) { pendingDeleteFile = nil }
-        } message: {
-            Text("Alle zugehörigen Telegram-Nachrichten werden gelöscht. Diese Aktion lässt sich in TGSpeicher nicht rückgängig machen.")
-        }
+    }
+
+    private struct DeletionSelection { var folder: CloudFolder?; var files: [CloudFileEntry] }
+    private var deletionSelection: DeletionSelection? {
+        if let folder = pendingDeleteFolder { return DeletionSelection(folder: folder, files: []) }
+        if let file = pendingDeleteFile { return DeletionSelection(files: [file]) }
+        if confirmBulkDelete { return DeletionSelection(files: selectedEntries) }
+        return nil
     }
 
     @ToolbarContentBuilder
@@ -456,9 +441,9 @@ struct OptimizedDriveBrowserV2: View {
                             }
                             .contextMenu { folderContextMenu(folder) }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) { pendingDeleteFolder = folder } label: {
+                                Button { pendingDeleteFolder = folder } label: {
                                     Label("Löschen", systemImage: "trash")
-                                }
+                                }.tint(.red)
                                 .disabled(!folderIsEmpty(folder))
                             }
                         }
@@ -486,9 +471,9 @@ struct OptimizedDriveBrowserV2: View {
                                 }
                                 .buttonStyle(.plain)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) { pendingDeleteFile = file } label: {
+                                    Button { pendingDeleteFile = file } label: {
                                         Label("Löschen", systemImage: "trash")
-                                    }
+                                    }.tint(.red)
                                 }
                             } else {
                                 NavigationLink {
@@ -498,9 +483,9 @@ struct OptimizedDriveBrowserV2: View {
                                 }
                                 .contextMenu { fileContextMenu(file) }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) { pendingDeleteFile = file } label: {
+                                    Button { pendingDeleteFile = file } label: {
                                         Label("Löschen", systemImage: "trash")
-                                    }
+                                    }.tint(.red)
                                 }
                             }
                         }

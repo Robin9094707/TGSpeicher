@@ -14,6 +14,19 @@ final class CloudStore: ObservableObject {
     @Published var lastExportURL: URL?
     @Published var lastDownloadedFileID: UUID?
     @Published var lastError: String?
+    @Published var deletingFileIDs = Set<UUID>()
+    @Published var isDeleting = false
+    @Published var deletionStatus = ""
+    @Published var deletionError: String?
+    lazy var deletionQueue = DurableDeletionQueue(
+        root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("TGSpeicher/Deletions-v1"),
+        request: { [weak self] request, done in self?.telegram.send(request, completion: done) },
+        commit: { [weak self] file, account in self?.commitDeletedFile(file, account: account) ?? false },
+        changed: { [weak self] ids, running, status, error in
+            self?.deletingFileIDs = ids; self?.isDeleting = running
+            self?.deletionStatus = status; self?.deletionError = error
+        }
+    )
     var lastUploadFailure: String?
 
     let telegram: TelegramClient
@@ -23,7 +36,6 @@ final class CloudStore: ObservableObject {
     private var catalogNeedsAnotherSync = false
     private var lastCatalogSyncAt = Date.distantPast
 
-    private let maxChunkBytes: Int64 = 1_900_000_000
     private let catalogMinimumInterval: TimeInterval = 45
     private let telegramFileReleaseDelay: TimeInterval = 8
     let snapshotMarker = "#TGSpeicherCatalogSnapshotV3"
@@ -64,9 +76,12 @@ final class CloudStore: ObservableObject {
 
         telegram.$savedMessagesChatID
             .removeDuplicates()
-            .compactMap { $0 }
-            .sink { [weak self] _ in
-                self?.bootstrapFromTelegram()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] account in
+                guard let self else { return }
+                self.deletionQueue.pause()
+                if account != nil { self.bootstrapFromTelegram() }
+                else { self.recoveryReady = false }
             }
             .store(in: &cancellables)
     }
@@ -239,6 +254,19 @@ final class CloudStore: ObservableObject {
         lastUploadFailure = nil
         let fileID = stableFileID ?? UUID()
         let total = url.fileByteSize
+        guard index.recovery?.deletedFiles[fileID] == nil else {
+            lastUploadFailure = "Diese Datei wurde bewusst aus Telegram gelöscht und wird nicht automatisch erneut gesichert."
+            lastError = lastUploadFailure
+            return nil
+        }
+        let layout: UploadLayout
+        do {
+            let eligibleKind = (nativeMedia?.kind != "photo" || total <= 10_000_000) && total <= telegram.maxUploadBytes ? nativeMedia?.kind : nil
+            layout = try telegram.resolveUploadLayout(fileID: fileID, chatID: chatID, total: total, nativeKind: eligibleKind,
+                partial: index.recovery?.partialFiles.first { $0.id == fileID && $0.telegramChatID == chatID })
+        } catch {
+            lastUploadFailure = error.localizedDescription; lastError = lastUploadFailure; return nil
+        }
         let createdAt = Date()
         let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
         upload = UploadProgress(
@@ -251,9 +279,7 @@ final class CloudStore: ObservableObject {
             status: "Datei und Prüfsumme werden vorbereitet …"
         )
 
-        if let nativeMedia,
-           (nativeMedia.kind != "photo" || total <= 10_000_000),
-           total <= telegram.maxUploadBytes {
+        if let nativeMedia, layout.nativeKind == nativeMedia.kind {
             sendNativeMedia(
                 url: url,
                 chatID: chatID,
@@ -291,13 +317,20 @@ final class CloudStore: ObservableObject {
         createdAt: Date,
         mimeType: String?
     ) {
+        let chunkBytes: Int64
+        do {
+            let layout = try telegram.resolveUploadLayout(fileID: fileID, chatID: chatID, total: url.fileByteSize,
+                nativeKind: nil, partial: index.recovery?.partialFiles.first { $0.id == fileID && $0.telegramChatID == chatID })
+            guard layout.nativeKind == nil else { throw RecoveryError.invalid("Dieser Upload wurde als Medium begonnen. Bitte den ursprünglichen Eintrag erneut prüfen.") }
+            chunkBytes = layout.chunkBytes
+        } catch { failUpload(error.localizedDescription); return }
         let accessed = url.startAccessingSecurityScopedResource()
         ioQueue.async { [weak self] in
             guard let self else { return }
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
 
             do {
-                let prepared = try FileChunker.prepare(source: url, maxChunkBytes: self.maxChunkBytes) { completed, total in
+                let prepared = try FileChunker.prepare(source: url, maxChunkBytes: chunkBytes) { completed, total in
                     DispatchQueue.main.async {
                         self.upload?.completedBytes = completed
                         self.upload?.totalBytes = total
@@ -421,6 +454,8 @@ final class CloudStore: ObservableObject {
                 }
                 // Unsupported codecs and Telegram-side media validation fall back to the
                 // durable chunked document format without losing the queue item.
+                do { try self.telegram.switchToDocumentLayout(fileID: fileID, chatID: chatID, total: url.fileByteSize) }
+                catch { self.failUpload(error.localizedDescription); return }
                 self.upload?.status = "Medienformat nicht unterstützt • wird als Datei gesichert …"
                 self.prepareDocumentUpload(
                     url: url, chatID: chatID, fileID: fileID, folderID: folderID,
@@ -572,6 +607,12 @@ final class CloudStore: ObservableObject {
                 return
             }
 
+            guard let returned = self.decodeManifest(from: DurableOutbox.caption(response)),
+                  returned.fileID == fileID, returned.chunkIndex == chunk.index,
+                  returned.chunkCount == chunk.count, returned.sha256 == chunk.sha256 else {
+                self.failUpload("Der vorhandene Telegram-Dateiteil gehört zu einem anderen Upload-Plan. Es wird keine weitere Kopie gesendet.", prepared: prepared)
+                return
+            }
             let info = self.documentFileInfo(fromMessage: response)
             var next = collected
             next.append(
@@ -975,25 +1016,42 @@ final class CloudStore: ObservableObject {
         }
     }
 
-    func deleteFileFromTelegram(_ file: CloudFileEntry) {
-        guard recoveryReady, !isRefreshing else { lastError = "Bitte zuerst die Wiederherstellung abschließen."; return }
-        guard let chatID = file.telegramChatID ?? telegram.savedMessagesChatID else { return }
-        let ids = file.chunks.compactMap(\.telegramMessageID)
-        guard !ids.isEmpty else {
-            index.files.removeAll { $0.id == file.id }
-            persistAndScheduleCatalog()
-            return
+    func deleteFileFromTelegram(_ file: CloudFileEntry) { deleteFilesFromTelegram([file]) }
+
+    func deleteFilesFromTelegram(_ files: [CloudFileEntry]) {
+        guard recoveryReady, !isRefreshing, let account = telegram.savedMessagesChatID else {
+            deletionError = "Bitte zuerst die Wiederherstellung abschließen."; return
         }
-        telegram.send(["@type": "deleteMessages", "chat_id": chatID, "message_ids": ids, "revoke": true]) { [weak self] response in
-            guard let self else { return }
-            if response["@type"] as? String == "error" {
-                self.lastError = self.friendlyTelegramError(response)
-                return
-            }
-            self.index.recovery?.deletedFiles[file.id] = Date()
-            self.index.files.removeAll { $0.id == file.id }
-            self.persistAndScheduleCatalog()
+        let liveIDs = Set(index.files.map(\.id))
+        deletionQueue.resume(account: account, adding: files.filter { liveIDs.contains($0.id) })
+    }
+
+    func retryDeletions() {
+        guard recoveryReady, !isRefreshing, let account = telegram.savedMessagesChatID else { return }
+        deletionQueue.resume(account: account)
+    }
+
+    private func commitDeletedFile(_ file: CloudFileEntry, account: Int64) -> Bool {
+        guard telegram.savedMessagesChatID == account, index.recovery?.accountID == account else { return false }
+        let previous = index
+        index.recovery?.deletedFiles[file.id] = Date()
+        if let source = file.sourceKey {
+            var excluded = index.recovery?.excludedPhotoResources ?? [:]
+            excluded[CatalogCodec.resourceIdentity(sourceKey: source, accountID: account, destination: file.telegramChatID ?? account)] = Date()
+            index.recovery?.excludedPhotoResources = excluded
         }
+        index.files.removeAll { $0.id == file.id }
+        index.recovery?.partialFiles.removeAll { $0.id == file.id }
+        guard persist() else { index = previous; return false }
+        catalogMutation += 1; forceNextCatalog = true
+        scheduleCatalogSync(delay: 1)
+        return true
+    }
+
+    func isPhotoExcluded(_ source: String, chatID: Int64?) -> Bool {
+        guard let account = telegram.savedMessagesChatID else { return false }
+        let key = CatalogCodec.resourceIdentity(sourceKey: source, accountID: account, destination: chatID ?? account)
+        return index.recovery?.excludedPhotoResources?[key] != nil
     }
 
     func deleteLocalIndexEntry(_ file: CloudFileEntry) {
@@ -1169,8 +1227,9 @@ final class CloudStore: ObservableObject {
         }
     }
 
-    func persist() {
-        guard let url = localIndexURL else { return }
+    @discardableResult
+    func persist() -> Bool {
+        guard let url = localIndexURL else { recoveryReady = false; return false }
         do {
             let data = try JSONEncoder().encode(index)
             if FileManager.default.fileExists(atPath: url.path) {
@@ -1183,8 +1242,10 @@ final class CloudStore: ObservableObject {
         } catch {
             recoveryReady = false
             lastError = "Der lokale Katalog konnte nicht gespeichert werden: \(error.localizedDescription)"
+            return false
         }
         objectWillChange.send()
+        return true
     }
 }
 

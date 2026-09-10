@@ -98,6 +98,7 @@ final class PhotoBackupManager: ObservableObject {
     @Published private(set) var backedUpAssets = 0
     @Published private(set) var backedUpResources = 0
     @Published private(set) var pendingResources = 0
+    @Published private(set) var excludedResources = 0
     @Published private(set) var deletableAssetCount = 0
     @Published private(set) var isRunning = false
     @Published private(set) var isPaused = false
@@ -461,7 +462,7 @@ final class PhotoBackupManager: ObservableObject {
                 self.lastLibraryScanAt = Date()
                 self.reconcileRecordsWithCloudIndex()
                 self.statusText = self.pendingResources == 0
-                    ? "Mediathek vollständig gesichert"
+                    ? (self.excludedResources > 0 ? "Mediathek geprüft; bewusst gelöschte Medien übersprungen" : "Mediathek vollständig gesichert")
                     : "Mediathek geprüft • \(self.pendingResources) Bestandteile ausstehend"
 
                 if self.isRunning && !self.isPaused {
@@ -652,7 +653,7 @@ final class PhotoBackupManager: ObservableObject {
 
         let folderID = ensureBackupFolder()
         if let failedPhoto = queue.items.first(where: {
-            $0.state == .failed && matchesDestination($0) && recordsByKey[$0.photoBackup!.resourceKey] == nil
+            $0.state == .failed && matchesDestination($0) && recordsByKey[$0.photoBackup!.resourceKey] == nil && !cloud.isPhotoExcluded($0.photoBackup!.resourceKey, chatID: $0.photoBackup?.destinationChatID)
         }) {
             scheduleAutomaticRetry(failedPhoto)
             return
@@ -973,7 +974,8 @@ final class PhotoBackupManager: ObservableObject {
             let candidate = pendingCandidates[pendingCandidateCursor]
             pendingCandidateCursor += 1
             if recordsByKey[candidate.resourceKey] == nil,
-               !deferredCandidateKeys.contains(candidate.resourceKey) {
+               !deferredCandidateKeys.contains(candidate.resourceKey),
+               !cloud.isPhotoExcluded(candidate.resourceKey, chatID: selectedDestinationID) {
                 return candidate
             }
         }
@@ -982,6 +984,10 @@ final class PhotoBackupManager: ObservableObject {
 
     private func scheduleAutomaticRetry(_ item: QueuedUpload) {
         guard isRunning, !isPaused else { return }
+        if let photo = item.photoBackup, cloud.isPhotoExcluded(photo.resourceKey, chatID: photo.destinationChatID) {
+            currentCandidate = nil; currentQueueItemID = nil; currentFileName = nil
+            processNextIfPossible(); return
+        }
         let attempts = item.automaticRetryCount ?? 0
         let localCopyExists = FileManager.default.fileExists(atPath: item.localPath)
         guard attempts < 5, localCopyExists else {
@@ -1168,7 +1174,7 @@ final class PhotoBackupManager: ObservableObject {
             requiredCounts[candidate.assetLocalIdentifier, default: 0] += 1
             if let record = recordsByKey[candidate.resourceKey], cloudIDs.contains(record.cloudFileID) {
                 backedCounts[candidate.assetLocalIdentifier, default: 0] += 1
-            } else {
+            } else if !cloud.isPhotoExcluded(candidate.resourceKey, chatID: destination) {
                 newPending.append(candidate)
             }
         }
@@ -1183,7 +1189,8 @@ final class PhotoBackupManager: ObservableObject {
         pendingCandidateCursor = 0
         totalResources = candidates.count
         pendingResources = newPending.count
-        backedUpResources = max(0, totalResources - pendingResources)
+        backedUpResources = backedCounts.values.reduce(0, +)
+        excludedResources = max(0, totalResources - backedUpResources - pendingResources)
         backedUpAssets = completeAssets.count
         deletableAssetCount = completeAssets.intersection(verifiedForDeletionAssetIDs).count
     }

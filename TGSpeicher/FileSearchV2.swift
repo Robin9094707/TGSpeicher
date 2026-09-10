@@ -4,6 +4,7 @@ import SwiftUI
 
 struct FileDetailV2: View {
     let fileID: UUID
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var cloud: CloudStore
     @State private var renameText = ""
     @State private var confirmDelete = false
@@ -76,7 +77,7 @@ struct FileDetailV2: View {
                         LabeledContent("Typ", value: file.typeLabel)
                         LabeledContent("Erstellt", value: file.createdAt.formatted(date: .abbreviated, time: .shortened))
                         LabeledContent("Geändert", value: file.modifiedAt.formatted(date: .abbreviated, time: .shortened))
-                        LabeledContent("Telegram-Quelle", value: "Telegram: Gespeichertes")
+                        LabeledContent("Telegram-Quelle", value: file.telegramChatID == nil || file.telegramChatID == cloud.telegram.savedMessagesChatID ? "Gespeichertes" : "Sicherungskanal")
                         if let folderID = file.folderID {
                             let path = cloud.folderPath(for: folderID).map(\.name).joined(separator: " / ")
                             LabeledContent("Ordner", value: path.isEmpty ? "Meine Dateien" : path)
@@ -153,14 +154,16 @@ struct FileDetailV2: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .tgGlassCard()
 
-                    Button("Aus Telegram löschen", systemImage: "trash.fill", role: .destructive) { confirmDelete = true }
+                    Button(cloud.deletingFileIDs.contains(fileID) ? "Löschung vorgemerkt …" : "Aus Telegram löschen", systemImage: "trash.fill", role: .destructive) { confirmDelete = true }
                         .buttonStyle(.bordered)
+                        .disabled(cloud.deletingFileIDs.contains(fileID) || !cloud.recoveryReady)
                 }
                 .padding(14)
             } else {
                 ContentUnavailableView("Datei nicht gefunden", systemImage: "doc.questionmark")
             }
         }
+        .onChange(of: file == nil) { _, removed in if removed { dismiss() } }
         .navigationTitle("Datei")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: cloud.isDownloading) { _, downloading in

@@ -5,6 +5,7 @@ struct V2RootView: View {
     @ObservedObject var telegram: TelegramClient
     @ObservedObject var cloud: CloudStore
 
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var preferences: AppPreferences
     @StateObject private var queue: UploadQueueManager
     @StateObject private var remoteImporter: RemoteURLImporter
@@ -55,6 +56,7 @@ struct V2RootView: View {
             }
         }
         .preferredColorScheme(preferences.appearance.colorScheme)
+        .onChange(of: scenePhase) { _, phase in if phase == .active { telegram.refreshUploadLimits() } }
         .alert("Telegram", isPresented: Binding(
             get: { telegram.lastError != nil && !photoBackup.isRunning },
             set: { if !$0 { telegram.clearError() } }
@@ -165,7 +167,9 @@ struct DriveShellV2: View {
             }
             .tabItem { Label("Einstellungen", systemImage: "gearshape.fill") }
         }
-        .safeAreaInset(edge: .top, spacing: 0) { RecoveryStatusBanner(cloud: cloud) }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 4) { RecoveryStatusBanner(cloud: cloud); DeletionStatusBanner(cloud: cloud) }
+        }
         .overlay(alignment: .bottom) {
             if let upload = cloud.upload {
                 LiveCompactTransferGlass(progress: upload, telemetry: telemetry)

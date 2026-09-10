@@ -1,6 +1,27 @@
-# TGSpeicher 3.0 – dein Telegram-Speicher für iOS
+# TGSpeicher 3.1 – dein Telegram-Speicher für iOS
 
 Native SwiftUI-App auf Deutsch für Dateien, Ordner, Tags, Fotos und Videos. Die App verbindet sich über TDLib direkt mit deinem Telegram-Konto. Dateien liegen in „Gespeichertes“, die Fotosicherung verwendet weiterhin den von dir gewählten Kanal. Kein zusätzlicher App-Server ist erforderlich.
+
+## Neu in Version 3.1
+
+- **Premium automatisch erkennen:** `getMe.is_premium`, laufende TDLib-Updates und die Upload-Teilgrenzen aus `getApplicationConfig`. Unbekannter Kontostatus beginnt mit der Standardgrenze. Kontostatus und Schalter stehen unter Einstellungen → Dateigröße & Premium; erneute Prüfung beim Öffnen und regelmäßig vor weiteren Uploads.
+- **Bis zu 4 GB pro Datei mit Premium:** Neue Dateien werden erst oberhalb von 4.000.000.000 Bytes geteilt, ohne Premium oberhalb von 2.000.000.000 Bytes. Niedrigere Servergrenzen haben Vorrang. Der Schalter kann Premium-Größen deaktivieren. Die Datei wird verlustfrei aufgeteilt, nicht abgeschnitten. Fotos als Telegram-Medien behalten Telegrams gesonderte Bildgrenzen.
+- **Stabile Upload-Pläne:** Die Aufteilung wird vor dem ersten Senden gespeichert. Angefangene v3.0-Uploads behalten ihre 1,9-GB-Teilgrenzen. Wiederhergestellte Teilnachrichten geben die ursprüngliche Größe vor. Ein Premium-Wechsel während einer Übertragung ändert den Plan nicht; Telegram kann bei abgelaufenem Premium einen großen begonnenen Teil ablehnen, der dann zur Klärung angehalten bleibt.
+- **Geordnetes Löschen:** Eine kontogebundene, lokale Löschwarteschlange sendet jeweils höchstens 100 eindeutige Nachrichten-IDs in einer Anfrage. Bestätigte Teilfortschritte bleiben gespeichert. Nach Neustart und Katalogabgleich wird fortgesetzt; bei Fehlern bleibt eine sichtbare Meldung mit „Erneut prüfen“. Der Katalogeintrag wird erst nach Bestätigung aller zugeordneten Nachrichten entfernt.
+- **Ruhigere Bedienung:** Wischaktionen öffnen eine gemeinsame Bestätigung und entfernen die Zeile erst nach erfolgreichem Löschen. Die Detailansicht schließt danach. Bewusst gelöschte Fotos werden im jeweiligen Kanal von der automatischen Sicherung ausgeschlossen; diese Ausschlüsse gehören zum Telegram-Katalog. Lokale Originale werden dabei nicht gelöscht.
+- **Neues App-Icon:** Ein eingebundenes 1024-Pixel-Icon mit Glasordner und Papierflieger für iPhone und iPad.
+
+Das Löschprotokoll liegt lokal; eine Deinstallation während einer noch unvollständigen Löschung kann es entfernen. Daher Löschaufträge und die anschließende Telegram-Katalogsicherung vor einer Deinstallation abschließen. Bereits bestätigte Löschungen sind dauerhaft. Neue Tests prüfen zusätzlich Premium-Grenzen, Aufteilungs-Migration, partielle Löschungen, Kontowechsel, Rate-Limits und abgebrochene Dateivorbereitung.
+
+Technische Referenzen: [Telegram Premium FAQ](https://telegram.org/faq_premium), [Upload-Teilgrenzen](https://core.telegram.org/api/files), [TDLib-Optionen](https://core.telegram.org/tdlib/options), [Nachrichten löschen](https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1delete_messages.html).
+
+## Mögliche nächste Funktionen
+
+Noch nicht implementiert; kurze Ideen für weitere Ausbaustufen:
+
+- **Telegram-Nachrichtenlinks teilen:** Direkte Verweise auf Dateien im Kanal; private Links erteilen anderen Personen keinen neuen Zugriff. Grundlage: [getMessageLink](https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1get_message_link.html).
+- **Dateikopien ohne erneuten Upload:** Vorhandene Telegram-Dateien serverseitig wiederverwenden, wenn Ziel und Zugriffsrechte es erlauben. Grundlage: [Resending existing files](https://core.telegram.org/api/files#resending-existing-files).
+- **Angeheftete Offline-Dateien mit Speicherbudget:** Häufig gebrauchte Dateien gezielt verfügbar halten, übrige Download-Caches begrenzen. Grundlage: [TDLib optimizeStorage](https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1optimize_storage.html).
 
 ## Was sich mit Version 3 ändert
 
@@ -56,7 +77,7 @@ Jeder Pull Request gegen `main` und jeder Push auf `main` führt den macOS-Workf
 1. Eigenständige Swift-Regressionstests für Katalogformat, Beschädigung, Kontotrennung, Ordnerstruktur, Migration, Sendeabbruch, Wiederholung und Schreibfehler.
 2. XcodeGen und die fest gepinnte TDLibFramework-Version.
 3. Release-Build für iPhone und iPad ab iOS 17; Liquid Glass ab iOS 26.
-4. Paket **`TGSpeicher-v3.0.0-unsigned.ipa`** als Actions-Artefakt.
+4. Paket **`TGSpeicher-v3.1.0-unsigned.ipa`** als Actions-Artefakt.
 
 Die IPA muss vor der Installation mit deiner Apple-ID beziehungsweise deinem Zertifikat signiert werden. Der Workflow verändert oder committet keinen App-Code mehr automatisch. Tests verwenden simulierte Telegram-Antworten; ein realer Telegram-/iCloud-/Neuinstallationsdurchlauf auf einem iPhone bleibt ein separater Gerätetest.
 

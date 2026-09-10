@@ -10,6 +10,7 @@ struct RecoveryMetadata: Codable {
     var deletedFolders: [UUID: Date] = [:]
     var deletedTags: [UUID: Date] = [:]
     var partialFiles: [CloudFileEntry] = []
+    var excludedPhotoResources: [String: Date]? = nil
 }
 
 struct RecoveryAnchor: Codable {
@@ -135,6 +136,9 @@ enum CatalogCodec {
             metadata.deletedFiles.merge(remote.deletedFiles) { max($0, $1) }
             metadata.deletedFolders.merge(remote.deletedFolders) { max($0, $1) }
             metadata.deletedTags.merge(remote.deletedTags) { max($0, $1) }
+            var excluded = metadata.excludedPhotoResources ?? [:]
+            excluded.merge(remote.excludedPhotoResources ?? [:]) { max($0, $1) }
+            metadata.excludedPhotoResources = excluded
             // A cursor is valid only for the matching snapshot, so keep the earlier boundary.
             metadata.scannedThrough.merge(remote.scannedThrough) { min($0, $1) }
             for partial in remote.partialFiles where !metadata.partialFiles.contains(where: { $0.id == partial.id }) {

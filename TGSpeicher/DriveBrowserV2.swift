@@ -130,7 +130,7 @@ struct DriveBrowserV2: View {
             Button("Aus Telegram löschen", role: .destructive) {
                 let entries = selectedEntries
                 selectedFiles.removeAll(); isSelecting = false
-                entries.forEach(cloud.deleteFileFromTelegram)
+                cloud.deleteFilesFromTelegram(entries)
             }
             Button("Abbrechen", role: .cancel) { }
         }
