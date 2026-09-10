@@ -41,13 +41,13 @@ targets:
   BackgroundUploadExtension:
     type: app-extension
     platform: iOS
-    deploymentTarget:
-      iOS: "27.0"
+    deploymentTarget: "27.0"
     sources:
       - path: BackgroundUploadExtension
       - path: TGSpeicher/BackgroundRelayShared.swift
     settings:
       base:
+        IPHONEOS_DEPLOYMENT_TARGET: "27.0"
         PRODUCT_BUNDLE_IDENTIFIER: eu.simplexsmp.tgspeicher.backgroundupload
         PRODUCT_NAME: TGSpeicherBackgroundUpload
         SWIFT_VERSION: 5.0
