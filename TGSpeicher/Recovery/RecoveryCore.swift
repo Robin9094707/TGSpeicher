@@ -10,6 +10,7 @@ struct RecoveryMetadata: Codable {
     var deletedFolders: [UUID: Date] = [:]
     var deletedTags: [UUID: Date] = [:]
     var partialFiles: [CloudFileEntry] = []
+    var music: MusicLibrary? = nil
     var excludedPhotoResources: [String: Date]? = nil
 }
 
@@ -114,6 +115,7 @@ enum CatalogCodec {
               Set(snapshot.tags.map(\.id)).count == snapshot.tags.count else {
             throw RecoveryError.invalid("Der Katalog enthält doppelte Kennungen oder eine unbekannte Version.")
         }
+        try snapshot.recovery?.music?.validate()
         let folders = Dictionary(uniqueKeysWithValues: snapshot.folders.map { ($0.id, $0) })
         for folder in snapshot.folders {
             var seen = Set<UUID>()
@@ -132,6 +134,7 @@ enum CatalogCodec {
         var result = local
         var metadata = local.recovery ?? RecoveryMetadata(accountID: accountID)
         if let remote = snapshot.recovery {
+            if remote.music != nil { metadata.music = (metadata.music ?? MusicLibrary()).merging(remote.music) }
             metadata.destinationChatID = metadata.destinationChatID ?? remote.destinationChatID
             metadata.deletedFiles.merge(remote.deletedFiles) { max($0, $1) }
             metadata.deletedFolders.merge(remote.deletedFolders) { max($0, $1) }

@@ -71,8 +71,75 @@ struct RecoveryTests {
         try testUploadPolicy()
         try testDeletionQueue()
         try testChunker()
+        try testMusic()
         print("\(checks) recovery checks passed")
     }
+
+    static func testMusic() throws {
+        let first = UUID(), second = UUID(), missing = UUID()
+        var playlist = MusicPlaylist(name: "Unterwegs")
+        playlist.edit(tracks: [first, second, first, missing])
+        check(playlist.trackIDs == [first, second, missing], "playlist deduplicates without changing user order or dropping unavailable references")
+        var localMusic = MusicLibrary(playlists: [playlist], tracks: [first: MusicTrackInfo(title: "Ein Titel", artist: "Künstler", album: "Album", duration: 125)])
+        let old = localMusic
+        playlist.edit(tracks: [second, first])
+        localMusic.playlists = [playlist]
+        check(localMusic.merging(old).playlists[0].trackIDs == [second, first], "stale snapshot cannot undo track removal and reorder")
+        check(old.merging(localMusic).playlists == localMusic.merging(old).playlists, "playlist merge converges independently of merge direction")
+        var deleted = localMusic
+        deleted.deletedPlaylists[playlist.id] = Date().timeIntervalSince1970
+        deleted.playlists = []
+        check(deleted.merging(old).playlists.isEmpty, "deleted playlist cannot return from old Telegram catalog")
+        var local = CloudIndex()
+        local.recovery = RecoveryMetadata(accountID: 99, music: localMusic)
+        let oldSnapshot = CatalogSnapshot(revision: 1, createdAt: Date(), folders: [], files: [], tags: [], recovery: RecoveryMetadata(accountID: 99))
+        check(CatalogCodec.merge(oldSnapshot, into: local, accountID: 99).recovery?.music == localMusic, "v3.1 catalog import preserves v3.2 music state")
+        var musical = oldSnapshot; musical.recovery?.music = localMusic
+        let archive = try CatalogCodec.encode(musical)
+        let restored = try CatalogCodec.decode(archive, accountID: 99)
+        check(restored.recovery?.music == localMusic, "playlists order metadata and precise edit times survive compressed Telegram archive")
+        rejects("music catalog cannot be imported into different account") { _ = try CatalogCodec.decode(archive, accountID: 100) }
+        var corrupt = musical; corrupt.recovery?.music?.playlists.append(playlist)
+        rejects("duplicate playlist IDs rejected safely") { _ = try CatalogCodec.encode(corrupt) }
+        corrupt = musical; corrupt.recovery?.music?.version = 999
+        rejects("future music format cannot silently overwrite current data") { _ = try CatalogCodec.encode(corrupt) }
+        corrupt = musical; corrupt.recovery?.music?.playlists[0].trackIDs = [first, first]
+        rejects("corrupt duplicate track references rejected") { _ = try CatalogCodec.encode(corrupt) }
+        let legacy = try JSONDecoder().decode(RecoveryMetadata.self, from: JSONEncoder().encode(RecoveryMetadata(accountID: 99)))
+        check(legacy.music == nil, "existing recovery metadata upgrades without a destructive migration")
+        let map = try MusicRangeMap(sizes: [3, 5], total: 8)
+        let a = try map.slice(offset: 2, remaining: 6)
+        let b = try map.slice(offset: 3, remaining: 5)
+        let end = try map.slice(offset: 8, remaining: 100)
+        check(a == MusicRangeMap.Slice(chunk: 0, offset: 2, count: 1), "stream stops read at multipart boundary")
+        check(b == MusicRangeMap.Slice(chunk: 1, offset: 0, count: 5), "stream continues at next chunk with local offset zero")
+        check(end == nil, "end of audio file finishes without an extra Telegram request")
+        let large = try MusicRangeMap(sizes: [4_000_000_000], total: 4_000_000_000)
+        let block = try large.slice(offset: 3_000_000_000, remaining: 1_000_000_000)
+        check(block?.count == MusicRangeMap.blockSize && block?.offset == 3_000_000_000, "4GB audio offsets remain 64-bit while reads stay bounded")
+        rejects("negative audio range rejected") { _ = try map.slice(offset: -1, remaining: 1) }
+        rejects("incomplete audio layout rejected") { _ = try MusicRangeMap(sizes: [3, 4], total: 8) }
+        rejects("overflowing audio layout rejected") { _ = try MusicRangeMap(sizes: [Int64.max, 1], total: 8) }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data([0, 1, 2, 3, 4, 5]).write(to: root)
+        let bytes = try MusicRangeMap.verifiedRead(path: root.path, offset: 2, count: 3, downloadedPrefix: 3)
+        check(bytes == Data([2, 3, 4]), "verified stream returns the requested bytes only")
+        rejects("sparse or interrupted download cannot expose unverified audio bytes") {
+            _ = try MusicRangeMap.verifiedRead(path: root.path, offset: 2, count: 3, downloadedPrefix: 1)
+        }
+        rejects("truncated local audio read fails rather than reporting successful EOF") {
+            _ = try MusicRangeMap.verifiedRead(path: root.path, offset: 5, count: 3, downloadedPrefix: 3)
+        }
+        var queue = MusicQueue(ids: [first, second])
+        check(queue.advance() == second && queue.advance() == nil, "queue stops at end with repeat disabled")
+        queue.repeatMode = .all
+        check(queue.advance() == first, "repeat all wraps to the first title")
+        queue.repeatMode = .one
+        check(queue.advance() == first && queue.advance(manual: true) == second, "repeat one repeats naturally but manual next skips")
+        check(MusicQueue().current == nil, "empty restored queue cannot crash")
+    }
+
     static func tryDecode(_ data: Data) -> CatalogSnapshot? { try? CatalogCodec.decode(data, accountID: 99) }
 
     static func testOutbox() throws {

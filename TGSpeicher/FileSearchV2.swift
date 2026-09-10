@@ -3,6 +3,7 @@ import SwiftUI
 // MARK: - File Detail / Preview
 
 struct FileDetailV2: View {
+    @EnvironmentObject private var music: MusicPlayer
     let fileID: UUID
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var cloud: CloudStore
@@ -32,6 +33,12 @@ struct FileDetailV2: View {
                         Text(file.name).font(.title3.bold()).multilineTextAlignment(.center)
                         Text(file.totalSize.byteCountString).foregroundStyle(.secondary)
 
+                        if file.isMusic {
+                            HStack {
+                                Button("Musik abspielen", systemImage: "play.circle.fill") { music.play([file.id]); music.showingPlayer = true }.buttonStyle(.borderedProminent)
+                                Menu { MusicTrackMenu(file: file, cloud: cloud) } label: { Image(systemName: "music.note.list").accessibilityLabel("Musik-Aktionen") }.buttonStyle(.bordered)
+                            }.disabled(!cloud.recoveryReady)
+                        }
                         if file.isTGImage || file.isTGVideo {
                             Button(file.isTGVideo ? "Originalvideo öffnen" : "Telegram-Vorschau", systemImage: file.isTGVideo ? "play.circle.fill" : "photo.fill") {
                                 showingCloudPreview = true

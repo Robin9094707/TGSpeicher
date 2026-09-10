@@ -1,6 +1,30 @@
-# TGSpeicher 3.1 – dein Telegram-Speicher für iOS
+# TGSpeicher 3.2 – dein Telegram-Speicher für iOS
 
 Native SwiftUI-App auf Deutsch für Dateien, Ordner, Tags, Fotos und Videos. Die App verbindet sich über TDLib direkt mit deinem Telegram-Konto. Dateien liegen in „Gespeichertes“, die Fotosicherung verwendet weiterhin den von dir gewählten Kanal. Kein zusätzlicher App-Server ist erforderlich.
+
+## Neu in Version 3.2: Musik aus deinen Telegram-Ordnern
+
+- **Eigener Musikbereich:** Bereits hochgeladene Audiodateien erscheinen automatisch. Nach Ordner filtern und nach Dateiname, eingelesenem Titel, Künstler oder Album suchen. Neue Dateien wie bisher unter „Dateien“ hochladen; der Player erzeugt keine zweite Telegram-Kopie.
+- **Playlists:** Erstellen, umbenennen, Titel aus mehreren Ordnern auswählen, hinzufügen, entfernen und über „Bearbeiten“ umsortieren. Das Löschen einer Playlist oder einer Verknüpfung entfernt niemals das Original. Vorübergehend fehlende Dateien bleiben als nicht verfügbare Verknüpfung sichtbar.
+- **Native Wiedergabe:** AVPlayer mit großer Liquid-Glass-Ansicht, eingebettetem Cover, Mini-Player über den fünf Tabs, veränderbarer Warteschlange, Zufallswiedergabe, Wiederholung, Positionsregler, Geschwindigkeit und Sleeptimer. Die bisherige Übersicht ist unter Einstellungen → Speicherübersicht erreichbar.
+- **Systemintegration:** Audiowiedergabe im Hintergrund, Sperrbildschirm, Kopfhörersteuerung, AirPlay und Systemlautstärke. Abgezogene Kopfhörer pausieren; Anrufe und Audio-Unterbrechungen werden berücksichtigt. Die letzte Warteschlange und Position werden kontogebunden lokal gespeichert; beim Neustart beginnt keine automatische Wiedergabe.
+- **Telegram-Streaming:** Dauerhafte Nachrichten-IDs werden beim Öffnen frisch in TDLib-Datei-IDs aufgelöst. Der Player fordert höchstens 512 KiB pro Lesevorgang an und prüft mit `getFileDownloadedPrefixSize`, ob die Bytes tatsächlich verfügbar sind. Auch verlustfrei aufgeteilte Dokumente werden über ihre Teilgrenzen hinweg gelesen. Abgebrochene Bereichsabrufe, Zeitüberschreitungen und Titelwechsel geben keine unbestätigten Dateibereiche als Audio aus.
+- **Metadaten:** Eingebettete Titel-, Künstler- und Album-Tags sowie weitere von AVFoundation lesbare Text- und Zahlenfelder erscheinen unter „Titelinfo“. „Metadaten einlesen“ liest die Bibliothek nacheinander ein und ist stoppbar; dadurch werden noch nicht abgespielte Titel anhand ihrer Tags durchsuchbar. Cover werden verkleinert und begrenzt im Arbeitsspeicher gehalten, ohne den Telegram-Katalog mit Bildern aufzublähen.
+- **Offline-Kopie:** Im großen Player über „… → Titel offline speichern“ die vollständige Datei herunterladen und prüfen. Die zusätzliche Player-Kopie ist anhand des Kontos, der Datei-ID und der Telegram-Teilnachrichten zugeordnet. „Offline-Kopie entfernen“ entfernt nur diese lokale Player-Kopie. Der normale Download bleibt unter „Dateien → Downloads“ verfügbar.
+
+### Playlists sichern und wiederherstellen
+
+Playlist-Namen, geordnete Datei-UUIDs, Text-Metadaten und Playlist-Löschmarkierungen gehören zum bestehenden komprimierten Telegram-Katalog. Die Originaldateieinträge enthalten weiterhin Chat-, Nachrichten- und Teil-IDs. Änderungen werden zuerst atomar lokal gespeichert und anschließend über die gemeinsame Katalogsicherung gesendet. Unter Musik ist außerdem **„Musikbibliothek jetzt in Telegram sichern“** verfügbar. Vor einer Deinstallation warten, bis diese Sicherung erfolgreich ist; ausschließlich lokale Änderungen, Wiedergabepositionen und Offline-Kopien sind kein Bestandteil der Telegram-Wiederherstellung.
+
+Ältere v2/v3.0/v3.1-Kataloge bleiben importierbar und entfernen keine bereits vorhandene Musikbibliothek. Bei gleichzeitig bearbeiteten Playlists gewinnt die zuletzt bearbeitete Playlist-Version; dauerhaft gelöschte Playlist-IDs werden nicht aus alten Sicherungen wiederbelebt. Neue Playlists erhalten neue IDs. Bestehende Bundle-ID, Dateiablage, Upload-Protokolle und Schlüsselbund-Zugänge bleiben erhalten. **Version 3.2 über die vorhandene App installieren und dieselbe Signierung verwenden**, statt sie vorher zu löschen.
+
+### Wiedergabegrenzen
+
+Die App verwendet die nativen iOS-Decoder. MP3, AAC/M4A, ALAC, WAV, AIFF und FLAC hängen vom konkreten Container und Codec ab; insbesondere Ogg/Opus, WMA, beschädigte oder DRM-geschützte Dateien sind nicht allgemein garantiert. Nicht jede Datei enthält Cover oder vollständige Tags. Nicht unterstützte Codecs werden nicht automatisch konvertiert. Streaming benötigt die Verbindung zu Telegram; eine vollständige Offline-Kopie kann bei schlecht streambaren, aber nativ unterstützten Dateien helfen. Das Sperrbildschirmverhalten, Bluetooth, AirPlay und reale Telegram-Streams müssen zusätzlich auf einem signierten iPhone getestet werden; der CI-Build ersetzt diese Gerätetests nicht.
+
+Die Offline-Funktion legt derzeit einzelne Titel gezielt ab; ein automatischer Download ganzer Playlists, ein Equalizer und garantiert lückenlose Albumübergänge gehören nicht zu Version 3.2. Ein Kontowechsel stoppt Wiedergabe und laufende Metadatenabrufe. Der bestehende Katalogabgleich muss nach dem Start erfolgreich abgeschlossen sein, bevor Wiedergabe oder Playlist-Änderungen freigegeben werden.
+
+Technische Referenzen: [TDLib-Bereichsdownload](https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1download_file.html), [vollständig verfügbare Dateibereiche prüfen](https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1get_file_downloaded_prefix_size.html), [Apple: AVFoundation-Metadaten asynchron laden](https://developer.apple.com/videos/play/wwdc2021/10146/), [Apple: Now Playing und Systemsteuerung](https://developer.apple.com/videos/play/wwdc2022/110338/).
 
 ## Neu in Version 3.1
 
@@ -53,6 +77,10 @@ Vor dem Entfernen gesicherter Originale vom iPhone muss die Telegram-Dateiprüfu
 | `Recovery/DurableOutbox.swift` | Atomare Sendeabsichten, vorläufige IDs, bestätigte IDs, konservativer Abgleich vor Wiederholung |
 | `Recovery/CloudRecovery.swift` | Snapshot-Suche mit Rückfall auf ältere Versionen, kontogebundener Import, paginierter Kanalabgleich |
 | `Recovery/RecoveryCenterView.swift` | Sicherungsstatus, Export, Import, Nachrichten-ID und Schlüsselbund-Verweise |
+| `Music/MusicModels.swift` | Musik-Katalog, Playlist-Zusammenführung, validierte 64-Bit-Bereichsplanung und Warteschlange |
+| `Music/TelegramAudioResource.swift` | Abgesicherte, abbrechbare Telegram-Bereichsabrufe für AVPlayer |
+| `Music/MusicPlayer.swift` | Native Audio-Session, Metadaten, Offline-Kopien und Systemsteuerung |
+| `Music/MusicViews.swift` | Deutscher Musikbereich, Playlists, Mini-Player und große Playeransicht |
 | `CloudStore.swift` | Gemeinsamer Dateikatalog, Übertragungen und zeitlich gebündelte Snapshots |
 | `UploadQueue.swift` | Persistente Warteschlange, Dateibereitstellung, Hashing, Kontozuordnung |
 | `PhotoBackupManager.swift` | Photos-/iCloud-Export, lokale Fotozuordnungen, Nachtmodus; kein konkurrierender Telegram-Fotokatalog mehr |
@@ -74,10 +102,10 @@ Lokale Kataloge besitzen eine vorherige Version als Rückfallkopie. Katalogimpor
 
 Jeder Pull Request gegen `main` und jeder Push auf `main` führt den macOS-Workflow aus:
 
-1. Eigenständige Swift-Regressionstests für Katalogformat, Beschädigung, Kontotrennung, Ordnerstruktur, Migration, Sendeabbruch, Wiederholung und Schreibfehler.
+1. Eigenständige Swift-Regressionstests für Katalogformat, Beschädigung, Kontotrennung, Ordnerstruktur, Migration, Sendeabbruch, Wiederholung und Schreibfehler; zusätzlich Playlist-Migration/-Konflikte/-Löschung, 4-GB-Bereichsplanung, unvollständige Audiodownloads und Wiedergabereihenfolge.
 2. XcodeGen und die fest gepinnte TDLibFramework-Version.
 3. Release-Build für iPhone und iPad ab iOS 17; Liquid Glass ab iOS 26.
-4. Paket **`TGSpeicher-v3.1.0-unsigned.ipa`** als Actions-Artefakt.
+4. Paket **`TGSpeicher-v3.2.0-unsigned.ipa`** als Actions-Artefakt.
 
 Die IPA muss vor der Installation mit deiner Apple-ID beziehungsweise deinem Zertifikat signiert werden. Der Workflow verändert oder committet keinen App-Code mehr automatisch. Tests verwenden simulierte Telegram-Antworten; ein realer Telegram-/iCloud-/Neuinstallationsdurchlauf auf einem iPhone bleibt ein separater Gerätetest.
 
