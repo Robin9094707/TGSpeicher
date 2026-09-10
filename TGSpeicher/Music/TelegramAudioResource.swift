@@ -14,8 +14,11 @@ final class TelegramAudioResource: NSObject, AVAssetResourceLoaderDelegate {
     private var fileIDs: [Int: Int] = [:]
     private var busy = false
     private var stopped = false
+    private let byteBudget: Int?
+    private var requestedBytes = 0
 
-    init(file: CloudFileEntry, accountID: Int64, telegram: TelegramClient) throws {
+    init(file: CloudFileEntry, accountID: Int64, telegram: TelegramClient, byteBudget: Int? = nil) throws {
+        self.byteBudget = byteBudget
         guard file.isComplete else { throw RecoveryError.invalid("Dieser Titel ist noch nicht vollständig gesichert.") }
         self.file = file; self.telegram = telegram; self.chatID = file.telegramChatID ?? accountID
         chunks = file.chunks.sorted { $0.index < $1.index }
@@ -73,6 +76,10 @@ final class TelegramAudioResource: NSObject, AVAssetResourceLoaderDelegate {
             guard let slice = try map.slice(offset: offset, remaining: max(0, limit - offset)) else {
                 finish(request); return
             }
+            if let byteBudget, requestedBytes + slice.count > byteBudget {
+                finish(request, error: RecoveryError.invalid("Metadaten-Vorladen begrenzt; vollständige Tags beim Abspielen.")); return
+            }
+            requestedBytes += slice.count
             busy = true
             resolve(slice.chunk) { [weak self, weak request] result in
                 guard let self else { return }
@@ -174,3 +181,4 @@ final class TelegramAudioResource: NSObject, AVAssetResourceLoaderDelegate {
         }
     }
 }
+

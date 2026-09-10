@@ -1,67 +1,6 @@
 import Foundation
 import Combine
-
-struct PhotoBackupQueueMetadata: Codable, Hashable {
-    let resourceKey: String
-    let assetLocalIdentifier: String
-    let resourceTypeRawValue: Int
-    let fileName: String
-    let mediaKind: String
-    let creationDate: Date?
-    var destinationChatID: Int64? = nil
-    var nativeMedia: NativeMediaUploadDescriptor? = nil
-}
-
-struct QueuedUpload: Identifiable, Codable, Hashable {
-    enum State: String, Codable {
-        case queued
-        case uploading
-        case failed
-        case completed
-    }
-
-    let id: UUID
-    var localPath: String
-    var displayName: String
-    var folderID: UUID?
-    var tagIDs: [UUID]
-    var byteSize: Int64
-    var createdAt: Date
-    var startedAt: Date?
-    var completedAt: Date?
-    var state: State
-    var lastError: String?
-    var cloudFileID: UUID?
-    var photoBackup: PhotoBackupQueueMetadata?
-    var automaticRetryCount: Int?
-    var accountID: Int64? = nil
-
-    init(
-        id: UUID = UUID(),
-        localPath: String,
-        displayName: String,
-        folderID: UUID?,
-        tagIDs: [UUID],
-        byteSize: Int64,
-        createdAt: Date = Date(),
-        state: State = .queued,
-        cloudFileID: UUID? = nil,
-        photoBackup: PhotoBackupQueueMetadata? = nil,
-        automaticRetryCount: Int? = nil
-    ) {
-        self.id = id
-        self.localPath = localPath
-        self.displayName = displayName
-        self.folderID = folderID
-        self.tagIDs = tagIDs
-        self.byteSize = byteSize
-        self.createdAt = createdAt
-        self.state = state
-        self.cloudFileID = cloudFileID
-        self.photoBackup = photoBackup
-        self.automaticRetryCount = automaticRetryCount
-    }
-}
+import AVFoundation
 
 @MainActor
 final class UploadQueueManager: ObservableObject {
@@ -156,8 +95,9 @@ final class UploadQueueManager: ObservableObject {
     var failedCount: Int { items.filter { $0.state == .failed }.count }
     var activeItem: QueuedUpload? { activeID.flatMap { id in items.first { $0.id == id } } }
 
-    func enqueue(urls: [URL], folderID: UUID?, tagIDs: [UUID] = []) {
+    func enqueue(urls: [URL], folderID: UUID?, tagIDs: [UUID] = [], musicDestinationChatID: Int64? = nil) {
         guard !urls.isEmpty else { return }
+        ContinuedTransfers.shared.start()
         isPreparingFiles = true
         lastError = nil
 
@@ -165,7 +105,7 @@ final class UploadQueueManager: ObservableObject {
         let ownerAccountID = cloud.telegram.savedMessagesChatID
         Task {
             do {
-                let prepared = try await Task.detached(priority: .userInitiated) {
+                let copied = try await Task.detached(priority: .userInitiated) {
                     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
                     var result: [QueuedUpload] = []
                     for source in urls {
@@ -190,6 +130,9 @@ final class UploadQueueManager: ObservableObject {
                                 byteSize: destination.fileByteSize
                             )
                         )
+                        if musicDestinationChatID != nil, !result.isEmpty {
+                            result[result.count - 1].musicDestinationChatID = musicDestinationChatID
+                        }
                         if var receipt = result.last {
                             receipt.accountID = ownerAccountID
                             try JSONEncoder().encode(receipt).write(to: itemFolder.appendingPathComponent("staged-upload.json"), options: [.atomic])
@@ -198,6 +141,19 @@ final class UploadQueueManager: ObservableObject {
                     return result
                 }.value
 
+                var prepared = copied
+                if musicDestinationChatID != nil {
+                    for i in prepared.indices {
+                        let url = URL(fileURLWithPath: prepared[i].localPath)
+                        let metadata = await MusicMetadata.read(AVURLAsset(url: url))
+                        prepared[i].musicDescriptor = NativeMediaUploadDescriptor(kind: "audio", width: 0, height: 0,
+                            duration: Int(min(Double(Int32.max), max(0, metadata.info.duration ?? 0))),
+                            title: metadata.info.title ?? (prepared[i].displayName as NSString).deletingPathExtension,
+                            performer: metadata.info.artist)
+                        prepared[i].accountID = ownerAccountID
+                        try JSONEncoder().encode(prepared[i]).write(to: url.deletingLastPathComponent().appendingPathComponent("staged-upload.json"), options: [.atomic])
+                    }
+                }
                 let owned = prepared.map { item -> QueuedUpload in
                     var item = item
                     item.accountID = ownerAccountID
@@ -310,6 +266,7 @@ final class UploadQueueManager: ObservableObject {
     }
 
     func resume() {
+        if queuedCount > 0 { ContinuedTransfers.shared.start() }
         isPaused = false
         processNextIfPossible()
     }
@@ -445,8 +402,8 @@ final class UploadQueueManager: ObservableObject {
             tagIDs: items[index].tagIDs,
             stableFileID: stableCloudFileID,
             sourceKey: items[index].photoBackup?.resourceKey,
-            destinationChatID: items[index].photoBackup?.destinationChatID,
-            nativeMedia: items[index].photoBackup?.nativeMedia,
+            destinationChatID: items[index].musicDestinationChatID ?? items[index].photoBackup?.destinationChatID,
+            nativeMedia: items[index].musicDescriptor ?? items[index].musicDestinationChatID.map { _ in NativeMediaUploadDescriptor(kind: "audio", width: 0, height: 0, duration: 0) } ?? items[index].photoBackup?.nativeMedia,
             photoBackup: items[index].photoBackup
         )
         if let expectedCloudFileID {
@@ -561,7 +518,7 @@ final class UploadQueueManager: ObservableObject {
     }
 
     private func matchingCloudFile(for item: QueuedUpload) -> CloudFileEntry? {
-        let destination = item.photoBackup?.destinationChatID ?? cloud.telegram.savedMessagesChatID
+        let destination = item.musicDestinationChatID ?? item.photoBackup?.destinationChatID ?? cloud.telegram.savedMessagesChatID
         return cloud.index.files.first { file in
             file.isComplete && (file.telegramChatID ?? cloud.telegram.savedMessagesChatID) == destination &&
             (file.id == (item.cloudFileID ?? item.id) ||
@@ -654,4 +611,5 @@ final class UploadQueueManager: ObservableObject {
         }
     }
 }
+
 

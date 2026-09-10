@@ -298,6 +298,8 @@ struct NativeMediaUploadDescriptor: Codable, Hashable {
     var width: Int
     var height: Int
     var duration: Int
+    var title: String? = nil
+    var performer: String? = nil
 }
 
 extension Int64 {
@@ -312,4 +314,5 @@ extension URL {
         return Int64(values?.fileSize ?? 0)
     }
 }
+
 

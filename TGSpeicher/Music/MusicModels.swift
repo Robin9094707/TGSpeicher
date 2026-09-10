@@ -25,7 +25,14 @@ struct MusicTrackInfo: Codable, Equatable {
 }
 
 /// Small, portable references only. Audio and regenerable artwork never inflate the catalog.
+struct MusicChannelChoice: Codable, Equatable {
+    var chatID: Int64?
+    var title: String
+    var updatedAt = Date().timeIntervalSince1970
+}
+
 struct MusicLibrary: Codable, Equatable {
+    var channel: MusicChannelChoice? = nil
     var version = 1
     var playlists: [MusicPlaylist] = []
     var deletedPlaylists: [UUID: Double] = [:]
@@ -34,6 +41,7 @@ struct MusicLibrary: Codable, Equatable {
     func merging(_ other: MusicLibrary?) -> MusicLibrary {
         guard let other else { return self }
         var result = self
+        if let choice = other.channel, choice.updatedAt > (result.channel?.updatedAt ?? 0) { result.channel = choice }
         result.deletedPlaylists.merge(other.deletedPlaylists, uniquingKeysWith: max)
         var lists = Dictionary(playlists.map { ($0.id, $0) }, uniquingKeysWith: Self.newer)
         for item in other.playlists { lists[item.id] = lists[item.id].map { Self.newer($0, item) } ?? item }
@@ -50,7 +58,8 @@ struct MusicLibrary: Codable, Equatable {
     }
 
     func validate() throws {
-        guard version == 1, playlists.count <= 10_000, tracks.count <= 200_000,
+        guard channel.map({ $0.updatedAt.isFinite && $0.title.count <= 200 }) ?? true,
+              version == 1, playlists.count <= 10_000, tracks.count <= 200_000,
               Set(playlists.map(\.id)).count == playlists.count,
               playlists.allSatisfy({ !$0.name.isEmpty && $0.name.count <= 200 && $0.updatedAt.isFinite
                   && $0.trackIDs.count <= 100_000 && Set($0.trackIDs).count == $0.trackIDs.count }),
@@ -131,3 +140,4 @@ struct MusicQueue: Codable {
         return nil
     }
 }
+

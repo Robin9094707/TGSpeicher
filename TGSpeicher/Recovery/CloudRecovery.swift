@@ -205,7 +205,7 @@ extension CloudStore {
             let channels = Set(index.files.filter { $0.sourceKey != nil }.compactMap(\.telegramChatID)).subtracting([account])
             if channels.count == 1 { index.recovery?.destinationChatID = channels.first }
         }
-        let chats = Set([account] + [index.recovery?.destinationChatID].compactMap { $0 }
+        let chats = Set([account] + [index.recovery?.destinationChatID, index.recovery?.music?.channel?.chatID].compactMap { $0 }
             + index.files.compactMap(\.telegramChatID) + (index.recovery?.partialFiles.compactMap(\.telegramChatID) ?? []))
         scanRecoveryChat(chats.sorted(), at: 0)
     }
@@ -285,7 +285,7 @@ extension CloudStore {
             }
             return
         }
-        guard ["fileChunk", "nativePhoto", "nativeVideo"].contains(manifest.kind),
+        guard ["fileChunk", "nativePhoto", "nativeVideo", "nativeAudio"].contains(manifest.kind),
               let id = manifest.fileID, index.recovery?.deletedFiles[id] == nil,
               let messageID = TelegramClient.int64(message["id"]), messageID > 0 else { return }
         // A newer local/catalog entry owns rename, move and tag metadata.
@@ -322,3 +322,4 @@ extension CloudStore {
         lastError = message
     }
 }
+

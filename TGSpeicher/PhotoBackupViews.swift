@@ -133,17 +133,10 @@ struct PhotoBackupView: View {
                 CloudMediaPreviewSheet(file: file, cloud: cloud)
             }
         }
-        .confirmationDialog(
-            "Vollständig zugeordnete Medien aus der iPhone-Mediathek entfernen?",
-            isPresented: $confirmDeleteLocal,
-            titleVisibility: .visible
-        ) {
-            Button("\(manager.deletableAssetCount) gesicherte Medien löschen", role: .destructive) {
+        .sheet(isPresented: $confirmDeleteLocal) {
+            TypedConfirmationSheet(title: "Gesicherte Medien löschen", message: "Es werden \(manager.deletableAssetCount) vollständig zugeordnete Medien aus der iPhone-Mediathek entfernt. iOS fragt gegebenenfalls zusätzlich nach.", phrase: DestructiveConfirmation.photos) {
                 manager.deleteFullyBackedUpAssetsFromPhotos()
             }
-            Button("Abbrechen", role: .cancel) { }
-        } message: {
-            Text("Es werden nur Medien mit vollständig zugeordneten Sicherungen berücksichtigt. iOS fragt möglicherweise zusätzlich nach einer Bestätigung.")
         }
     }
 
@@ -666,4 +659,5 @@ struct NightPhotoBackupScreen: View {
         .persistentSystemOverlays(.hidden)
     }
 }
+
 

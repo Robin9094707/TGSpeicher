@@ -1,11 +1,8 @@
-name: Build TGSpeicher IPA
+name: Validate music and transfer update
 
 on:
-  workflow_dispatch:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [codex/music-transfers-v3-3]
 
 permissions:
   contents: read
@@ -16,7 +13,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build unsigned IPA
+    name: Validate migrations and compile app with extension
     runs-on: macos-15
     timeout-minutes: 60
 
@@ -66,35 +63,11 @@ jobs:
             CODE_SIGN_IDENTITY='' \
             build | tee xcodebuild.log
 
-      - name: Package unsigned IPA
-        run: |
-          set -euo pipefail
-          APP_PATH="build/Build/Products/Release-iphoneos/TGSpeicher.app"
-          IPA_NAME="TGSpeicher-v3.3.0-unsigned.ipa"
-          test -d "$APP_PATH"
-          test -d "$APP_PATH/PlugIns/TGSpeicherLiveActivity.appex"
-          rm -rf Payload
-          mkdir Payload
-          cp -R "$APP_PATH" Payload/TGSpeicher.app
-          ditto -c -k --sequesterRsrc --keepParent Payload "$IPA_NAME"
-          unzip -t "$IPA_NAME"
-          ls -lh "$IPA_NAME"
-
-      - name: Upload IPA artifact
+      - name: Upload validation log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v3.3.0-unsigned-IPA
-          path: TGSpeicher-v3.3.0-unsigned.ipa
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: TGSpeicher-v3.3.0-build-log
+          name: music-update-validation-log
           path: xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
-
-

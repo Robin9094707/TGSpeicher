@@ -474,11 +474,12 @@ final class PhotoBackupManager: ObservableObject {
         }
     }
 
-    func startBackup(nightMode: Bool = false) {
+    func startBackup(nightMode: Bool = false, userInitiated: Bool = true) {
         guard hasLibraryAccess else {
             requestFullAccess()
             return
         }
+        if userInitiated { ContinuedTransfers.shared.start() }
         backupRunGeneration = UUID()
         persistSession(enabled: true, paused: false, nightMode: nightMode)
         isRunning = true
@@ -505,6 +506,7 @@ final class PhotoBackupManager: ObservableObject {
 
     func resumeBackup(nightMode: Bool = false) {
         guard hasLibraryAccess else { requestFullAccess(); return }
+        ContinuedTransfers.shared.start()
         backupRunGeneration = UUID()
         isRunning = true
         isPaused = false
@@ -1386,7 +1388,7 @@ final class PhotoBackupManager: ObservableObject {
             statusText = "Mediathek vollständig gesichert"
             return
         }
-        startBackup(nightMode: requestedNightMode)
+        startBackup(nightMode: requestedNightMode, userInitiated: false)
     }
 
     private func refreshAfterRemoteIndexReady() {
@@ -1442,4 +1444,5 @@ final class PhotoBackupManager: ObservableObject {
         }
     }
 }
+
 

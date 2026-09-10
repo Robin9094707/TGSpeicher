@@ -15,7 +15,10 @@ targets:
     platform: iOS
     sources:
       - path: TGSpeicher
+      - path: Shared
     dependencies:
+      - target: TGSpeicherLiveActivity
+        embed: true
       - package: TDLibFramework
         product: TDLibFramework
     settings:
@@ -25,12 +28,33 @@ targets:
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_FILE: TGSpeicher/Info.plist
-        CURRENT_PROJECT_VERSION: 32
+        CURRENT_PROJECT_VERSION: 33
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: 3.2.0
+        MARKETING_VERSION: 3.3.0
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
     scheme:
       testTargets: []
       gatherCoverageData: false
 
+
+
+  TGSpeicherLiveActivity:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: TGSpeicherLiveActivity
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.simplexsmp.tgspeicher.liveactivity
+        PRODUCT_NAME: TGSpeicherLiveActivity
+        INFOPLIST_FILE: TGSpeicherLiveActivity/Info.plist
+        CURRENT_PROJECT_VERSION: 33
+        MARKETING_VERSION: 3.3.0
+        SWIFT_VERSION: 5.0
+        TARGETED_DEVICE_FAMILY: "1,2"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic

@@ -120,7 +120,8 @@ final class TelegramClient: ObservableObject {
         start()
     }
 
-    func resetAPICredentials() {
+    func resetAPICredentials(confirmation: String = "") {
+        guard DestructiveConfirmation.matches(confirmation, phrase: DestructiveConfirmation.reset) else { return }
         debug("LOCAL RESET requested")
         closeClient()
         KeychainStore.delete(apiIDKey)
@@ -303,7 +304,8 @@ final class TelegramClient: ObservableObject {
         }
     }
 
-    func logOut() {
+    func logOut(confirmation: String = "") {
+        guard DestructiveConfirmation.matches(confirmation, phrase: DestructiveConfirmation.logout) else { return }
         send(["@type": "logOut"]) { [weak self] response in
             if response["@type"] as? String == "error" { self?.surfaceError(response) }
         }
@@ -808,4 +810,5 @@ final class TelegramClient: ObservableObject {
         return nil
     }
 }
+
 

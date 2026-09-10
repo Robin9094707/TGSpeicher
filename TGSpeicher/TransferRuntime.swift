@@ -6,16 +6,19 @@ import Combine
 @MainActor
 final class TransferRuntime: ObservableObject {
     private let cloud: CloudStore
+    private let backup: PhotoBackupManager
     private let preferences: AppPreferences
     private var cancellables = Set<AnyCancellable>()
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var previousUpload: UploadProgress?
     private var wasDownloading = false
 
-    init(cloud: CloudStore, preferences: AppPreferences) {
+    init(cloud: CloudStore, preferences: AppPreferences, backup: PhotoBackupManager) {
+        self.backup = backup
         self.cloud = cloud
         self.preferences = preferences
 
+        backup.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in self?.refreshRuntimeProtection() }.store(in: &cancellables)
         cloud.$upload
             .receive(on: RunLoop.main)
             .sink { [weak self] upload in
@@ -50,10 +53,8 @@ final class TransferRuntime: ObservableObject {
     }
 
     private func refreshRuntimeProtection() {
-        let active = cloud.upload != nil || cloud.isDownloading
-        if preferences.keepScreenAwakeDuringTransfers {
-            UIApplication.shared.isIdleTimerDisabled = active
-        }
+        let active = cloud.upload != nil || cloud.isDownloading || (backup.isRunning && !backup.isPaused)
+        UIApplication.shared.isIdleTimerDisabled = backup.isNightMode || (preferences.keepScreenAwakeDuringTransfers && active)
         if active { beginBackgroundTaskIfNeeded() } else { endBackgroundTaskIfNeeded() }
     }
 
@@ -80,4 +81,5 @@ final class TransferRuntime: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
 }
+
 

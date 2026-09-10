@@ -22,6 +22,12 @@ final class MusicPlayer: ObservableObject {
     private var scanTask: Task<Void, Never>?
     private var scanResource: TelegramAudioResource?
     private var scanAsset: AVURLAsset?
+    private var pendingMetadata: [CloudFileEntry] = []
+    private var pendingMetadataIDs = Set<UUID>()
+    private var scannedKeys = Set<String>()
+    private var diskCoverRequests = Set<String>()
+    private var metadataWorkerID = UUID()
+    private let network: TGNetworkMonitor
     private let covers = NSCache<NSString, UIImage>()
     @Published var showingPlayer = false
     @Published var error: String?
@@ -53,7 +59,8 @@ final class MusicPlayer: ObservableObject {
     var artist: String { currentInfo?.artist ?? "Unbekannter Künstler" }
     var availableFiles: [CloudFileEntry] { cloud.index.files.filter { $0.isMusic && $0.isComplete && !cloud.deletingFileIDs.contains($0.id) } }
 
-    init(cloud: CloudStore, telegram: TelegramClient) {
+    init(cloud: CloudStore, telegram: TelegramClient, network: TGNetworkMonitor) {
+        self.network = network
         self.cloud = cloud; self.telegram = telegram
         covers.countLimit = 64; covers.totalCostLimit = 32 * 1024 * 1024
         player.automaticallyWaitsToMinimizeStalling = true
@@ -72,6 +79,7 @@ final class MusicPlayer: ObservableObject {
             guard let self, self.accountID != account else { return }
             self.saveSession(); self.stop(clearQueue: true)
             self.accountID = account; self.restoredAccount = nil
+            self.offlineRevision += 1
             self.restoreSessionIfReady()
         }.store(in: &cancellables)
         telegram.$authorizationStage.receive(on: RunLoop.main).sink { [weak self] stage in
@@ -92,13 +100,20 @@ final class MusicPlayer: ObservableObject {
         cloud.$isDownloading.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] downloading in
             if !downloading { self?.completeOfflineDownload() }
         }.store(in: &cancellables)
+        network.$isConnected.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] connected in
+            guard let self else { return }
+            self.offlineRevision += 1
+            self.restoreSessionIfReady()
+            if connected { self.scannedKeys.removeAll(); self.prefetchMetadata(self.availableFiles.filter { self.offlineURL(for: $0) != nil }) }
+        }.store(in: &cancellables)
         observeSystemAudio()
         configureCommands()
     }
 
     func play(_ ids: [UUID], startingAt id: UUID? = nil) {
         guard canAccess, !offlineBusy else { return }
-        let allowed = Set(availableFiles.map(\.id))
+        let playable = network.isConnected ? availableFiles : offlineFiles
+        let allowed = Set(playable.map(\.id))
         var seen = Set<UUID>()
         let ids = ids.filter { allowed.contains($0) && seen.insert($0).inserted }
         guard !ids.isEmpty else { error = "Diese Titel sind im aktuellen Katalog noch nicht verfügbar."; return }
@@ -194,12 +209,11 @@ final class MusicPlayer: ObservableObject {
         if let date = sleepUntil, date <= Date() { pause(); setSleep(minutes: nil) }
     }
     private var canAccess: Bool {
-        telegram.authorizationStage == .ready && accountID != nil && cloud.recoveryReady && cloud.index.recovery?.accountID == accountID
+        telegram.authorizationStage == .ready && accountID != nil && (cloud.recoveryReady || !network.isConnected) && cloud.index.recovery?.accountID == accountID
     }
 
     private func loadCurrent(autoplay: Bool, offset: Double = 0) {
         guard canAccess, !offlineBusy, let file = currentFile, !cloud.deletingFileIDs.contains(file.id), let accountID else { return }
-        cancelMetadataScan()
         generation = UUID(); let token = generation
         metadataTask?.cancel(); resource?.stop(); resource = nil
         itemObservation = nil; player.pause(); player.replaceCurrentItem(with: nil)
@@ -276,7 +290,7 @@ final class MusicPlayer: ObservableObject {
     }
     private func stop(clearQueue: Bool) {
         saveSession(); generation = UUID(); metadataTask?.cancel(); metadataTask = nil
-        cancelMetadataScan(); covers.removeAllObjects()
+        cancelMetadataScan(); covers.removeAllObjects(); scannedKeys.removeAll(); diskCoverRequests.removeAll()
         resource?.stop(); resource = nil; itemObservation = nil
         player.pause(); player.replaceCurrentItem(with: nil)
         isPlaying = false; isBuffering = false; artwork = nil; elapsed = 0; duration = 0
@@ -384,56 +398,131 @@ final class MusicPlayer: ObservableObject {
         let info = cloud.musicLibrary.tracks[file.id]
         return [file.name, info?.title ?? "", info?.artist ?? "", info?.album ?? ""].contains { $0.localizedStandardContains(search) }
     }
-    private func cacheCover(_ cover: UIImage, id: UUID) {
-        let cost = cover.cgImage.map { $0.bytesPerRow * $0.height } ?? 2_560_000
-        covers.setObject(cover, forKey: id.uuidString as NSString, cost: cost)
+    private func coverURL(_ file: CloudFileEntry) -> URL? {
+        guard let accountID else { return nil }
+        return offlineDestination(file, account: accountID).appendingPathExtension("cover.jpg")
     }
-    func cover(for id: UUID) -> UIImage? { id == queue.current ? artwork : covers.object(forKey: id.uuidString as NSString) }
-    private func storeMetadata(_ info: MusicTrackInfo, id: UUID) {
-        if let old = cloud.musicLibrary.tracks[id], old.title == info.title, old.artist == info.artist,
-           old.album == info.album, old.duration == info.duration, old.details == info.details { return }
+    private func metadataKey(_ file: CloudFileEntry) -> String { coverURL(file)?.path ?? file.id.uuidString }
+    private func cacheCover(_ cover: UIImage, id: UUID) {
+        covers.setObject(cover, forKey: id.uuidString as NSString, cost: cover.cgImage.map { $0.bytesPerRow * $0.height } ?? 2_560_000)
+        guard let file = availableFiles.first(where: { $0.id == id }), let url = coverURL(file) else { return }
+        Task.detached(priority: .utility) {
+            guard let data = cover.jpegData(compressionQuality: 0.85) else { return }
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url, options: [.atomic])
+        }
+    }
+    func cover(for id: UUID) -> UIImage? {
+        if id == queue.current, let artwork { return artwork }
+        return covers.object(forKey: id.uuidString as NSString)
+    }
+    private func storeMetadata(_ value: MusicTrackInfo, id: UUID) {
+        var info = value
+        if let old = cloud.musicLibrary.tracks[id] {
+            info.title = info.title ?? old.title; info.artist = info.artist ?? old.artist
+            info.album = info.album ?? old.album; info.duration = info.duration ?? old.duration
+            info.details = old.details.merging(info.details) { _, new in new }
+            if old.title == info.title, old.artist == info.artist, old.album == info.album,
+               old.duration == info.duration, old.details == info.details { return }
+        }
         cloud.editMusic { $0.tracks[id] = info }
     }
+    func prefetchMetadata(_ files: [CloudFileEntry]) {
+        guard canAccess else { return }
+        for file in files {
+            let key = metadataKey(file)
+            if covers.object(forKey: file.id.uuidString as NSString) == nil,
+               let url = coverURL(file), diskCoverRequests.insert(key).inserted {
+                let account = accountID
+                Task { [weak self] in
+                    let image = await Task.detached(priority: .utility) { UIImage(contentsOfFile: url.path) }.value
+                    guard let self, self.accountID == account else { return }
+                    self.diskCoverRequests.remove(key)
+                    if let image {
+                        self.covers.setObject(image, forKey: file.id.uuidString as NSString,
+                            cost: image.cgImage.map { $0.bytesPerRow * $0.height } ?? 2_560_000)
+                        if self.queue.current == file.id, self.artwork == nil { self.artwork = image }
+                        self.objectWillChange.send()
+                    }
+                }
+            }
+            let last = UserDefaults.standard.double(forKey: "music.metadata.v2." + key)
+            guard !scannedKeys.contains(key), Date().timeIntervalSince1970 - last > 86_400,
+                  file.id != queue.current || player.currentItem == nil,
+                  network.isConnected || offlineURL(for: file) != nil,
+                  pendingMetadataIDs.insert(file.id).inserted else { continue }
+            pendingMetadata.append(file)
+        }
+        startMetadataWorker()
+    }
     func cancelMetadataScan() {
+        metadataWorkerID = UUID()
         scanTask?.cancel(); scanTask = nil; scanAsset?.cancelLoading(); scanAsset = nil
         scanResource?.stop(); scanResource = nil; isScanningMetadata = false
+        pendingMetadata.removeAll(); pendingMetadataIDs.removeAll()
     }
     func scanMetadata() {
-        guard canAccess, let accountID, !isScanningMetadata, !offlineBusy else { return }
+        for file in availableFiles {
+            scannedKeys.remove(metadataKey(file))
+            UserDefaults.standard.removeObject(forKey: "music.metadata.v2." + metadataKey(file))
+        }
+        prefetchMetadata(availableFiles)
+    }
+    private func startMetadataWorker() {
+        guard !isScanningMetadata, !pendingMetadata.isEmpty, canAccess, !offlineBusy, let accountID else { return }
         isScanningMetadata = true
-        let files = availableFiles
+        let worker = UUID(); metadataWorkerID = worker
         scanTask = Task { [weak self] in
             guard let self else { return }
-            var skipped = 0
-            for (position, file) in files.enumerated() {
-                guard !Task.isCancelled, self.canAccess, self.accountID == accountID else { return }
-                if file.id == self.queue.current { continue }
-                self.metadataStatus = "Metadaten · \(position + 1)/\(files.count)"
+            var completed = 0
+            while !self.pendingMetadata.isEmpty {
+                guard !Task.isCancelled, self.canAccess, self.accountID == accountID else { break }
+                let file = self.pendingMetadata.removeFirst()
+                let key = self.metadataKey(file)
+                self.metadataStatus = "Cover & Tags · \(completed + 1) · \(self.pendingMetadata.count) warten"
                 do {
                     let asset: AVURLAsset
                     if let local = self.offlineURL(for: file) { asset = AVURLAsset(url: local) }
                     else {
-                        let loader = try TelegramAudioResource(file: file, accountID: accountID, telegram: self.telegram)
+                        guard self.network.isConnected else { self.pendingMetadataIDs.remove(file.id); continue }
+                        let loader = try TelegramAudioResource(file: file, accountID: accountID, telegram: self.telegram, byteBudget: 8 * 1024 * 1024)
                         self.scanResource = loader; asset = loader.asset()
                     }
                     self.scanAsset = asset
                     let loader = self.scanResource
                     let timeout = Task { @MainActor in
-                        try? await Task.sleep(for: .seconds(25))
+                        try? await Task.sleep(for: .seconds(15))
                         if !Task.isCancelled { asset.cancelLoading(); loader?.stop() }
                     }
                     let result = await MusicMetadata.read(asset)
                     timeout.cancel(); loader?.stop()
-                    guard !Task.isCancelled, self.canAccess, self.accountID == accountID else { return }
+                    guard !Task.isCancelled, self.metadataWorkerID == worker, self.accountID == accountID else { return }
                     self.scanResource = nil; self.scanAsset = nil
-                    if result.info.duration != nil || !result.info.details.isEmpty { self.storeMetadata(result.info, id: file.id) }
-                    else { skipped += 1 }
-                    if let cover = result.artwork { self.cacheCover(cover, id: file.id); self.objectWillChange.send() }
-                } catch { skipped += 1 }
+                    self.scannedKeys.insert(key)
+                    if result.info.duration != nil || !result.info.details.isEmpty || result.info.title != nil {
+                        self.storeMetadata(result.info, id: file.id)
+                        if self.cloud.recoveryReady && !self.cloud.isRefreshing {
+                            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "music.metadata.v2." + key)
+                        }
+                    }
+                    if let cover = result.artwork {
+                        self.cacheCover(cover, id: file.id)
+                        if self.queue.current == file.id { self.artwork = cover }
+                        self.objectWillChange.send()
+                    }
+                } catch { self.scannedKeys.insert(key) }
+                self.pendingMetadataIDs.remove(file.id); completed += 1
+                try? await Task.sleep(for: .milliseconds(250))
             }
-            self.isScanningMetadata = false
-            self.metadataStatus = skipped == 0 ? "Metadaten eingelesen" : "Metadaten eingelesen · \(skipped) Titel ohne lesbare Tags"
+            guard self.metadataWorkerID == worker else { return }
+            self.isScanningMetadata = false; self.scanTask = nil
+            self.metadataStatus = "Cover & Tags aktualisiert"
         }
+    }
+    var offlineFiles: [CloudFileEntry] { availableFiles.filter { offlineURL(for: $0) != nil } }
+    func refreshOfflineLibrary() {
+        offlineRevision += 1
+        prefetchMetadata(offlineFiles)
     }
 
     private func offlineDestination(_ file: CloudFileEntry, account: Int64) -> URL {
@@ -449,7 +538,11 @@ final class MusicPlayer: ObservableObject {
         return url
     }
     func downloadCurrentOffline() {
-        guard canAccess, !cloud.isDownloading, !offlineBusy, let file = currentFile, let accountID else { return }
+        guard let file = currentFile else { return }
+        downloadOffline(file)
+    }
+    func downloadOffline(_ file: CloudFileEntry) {
+        guard canAccess, cloud.recoveryReady, network.isConnected, !cloud.isDownloading, !offlineBusy, let accountID else { return }
         cancelMetadataScan()
         pause(); generation = UUID(); metadataTask?.cancel(); resource?.stop(); resource = nil
         player.replaceCurrentItem(with: nil)
@@ -483,6 +576,7 @@ final class MusicPlayer: ObservableObject {
             guard let self, self.accountID == request.account, self.offlineGeneration == token else { return }
             self.offlineBusy = false; self.offlineRevision += 1
             if case .failure(let error) = result { self.error = error.localizedDescription }
+            else { self.prefetchMetadata([request.file]) }
         }
     }
     deinit {
@@ -495,14 +589,18 @@ final class MusicPlayer: ObservableObject {
     }
 
     func removeCurrentOffline() {
-        guard let file = currentFile, let url = offlineURL(for: file), !offlineBusy else { return }
-        pause(); player.replaceCurrentItem(with: nil)
+        guard let file = currentFile else { return }
+        removeOffline(file)
+    }
+    func removeOffline(_ file: CloudFileEntry) {
+        guard let url = offlineURL(for: file), !offlineBusy else { return }
+        if currentFile?.id == file.id { pause(); player.replaceCurrentItem(with: nil) }
         do { try FileManager.default.removeItem(at: url); offlineRevision += 1 }
         catch { self.error = error.localizedDescription }
     }
 }
 
-private enum MusicMetadata {
+enum MusicMetadata {
     struct Result { var info: MusicTrackInfo; var artwork: UIImage? }
     static func read(_ asset: AVURLAsset) async -> Result {
         var info = MusicTrackInfo(); var cover: UIImage?
@@ -538,3 +636,4 @@ private enum MusicMetadata {
         return Result(info: info, artwork: cover)
     }
 }
+

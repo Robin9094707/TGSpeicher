@@ -62,7 +62,7 @@ extension DurableOutbox {
             layout.chunkBytes = UploadPolicy.legacyChunkBytes
             layout.nativeKind = nil
         } else {
-            for kind in ["photo", "video"] {
+            for kind in ["photo", "video", "audio"] {
                 if try load(Self.token(fileID: fileID, part: 1, kind: kind)) != nil {
                     layout.nativeKind = kind
                     break
@@ -88,3 +88,4 @@ extension DurableOutbox {
         try JSONEncoder().encode(layout).write(to: path, options: [.atomic])
     }
 }
+

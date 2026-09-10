@@ -12,6 +12,7 @@ struct SettingsV2: View {
     var overview: AnyView? = nil
     @State private var recoveryMessageID = ""
     @State private var confirmReset = false
+    @State private var confirmLogout = false
     var body: some View {
         Form {
             if let overview { Section { NavigationLink { overview } label: { Label("Speicherübersicht", systemImage: "chart.bar.xaxis") } } }
@@ -44,7 +45,7 @@ struct SettingsV2: View {
             Section("Telegram") {
                 LabeledContent("Konto", value: telegram.accountName)
                 LabeledContent("Anmeldung", value: telegram.authorizationStage == .ready ? "Verbunden" : "Nicht verbunden")
-                Button("Von Telegram abmelden", systemImage: "rectangle.portrait.and.arrow.right") { telegram.logOut() }
+                Button("Von Telegram abmelden", systemImage: "rectangle.portrait.and.arrow.right") { confirmLogout = true }
             }
             Section("Datensicherung") {
                 NavigationLink { RecoveryCenterView(cloud: cloud) } label: {
@@ -70,9 +71,15 @@ struct SettingsV2: View {
             Section("Lokale Sitzung") { Button("Lokale Telegram-Anmeldedaten löschen", systemImage: "trash.fill", role: .destructive) { confirmReset = true } }
         }
         .navigationTitle("Einstellungen")
-        .confirmationDialog("Lokale Telegram-Anmeldedaten löschen?", isPresented: $confirmReset, titleVisibility: .visible) {
-            Button("Lokale Telegram-Daten löschen", role: .destructive) { telegram.resetAPICredentials() }
-            Button("Abbrechen", role: .cancel) { }
+        .sheet(isPresented: $confirmReset) {
+            TypedConfirmationSheet(title: "Lokale Anmeldedaten löschen", message: "Du musst dich danach neu anmelden. Deine in Telegram gesicherten Dateien bleiben erhalten.", phrase: DestructiveConfirmation.reset) {
+                telegram.resetAPICredentials(confirmation: DestructiveConfirmation.reset)
+            }
+        }
+        .sheet(isPresented: $confirmLogout) {
+            TypedConfirmationSheet(title: "Von Telegram abmelden", message: "Die Telegram-Sitzung wird beendet. Du musst dich für deine Dateien und Musik erneut anmelden.", phrase: DestructiveConfirmation.logout) {
+                telegram.logOut(confirmation: DestructiveConfirmation.logout)
+            }
         }
     }
 }
@@ -175,4 +182,5 @@ extension CloudFileEntry {
         return ext.isEmpty ? "Datei" : ext.uppercased() + "-Datei"
     }
 }
+
 

@@ -317,25 +317,17 @@ struct OptimizedDriveBrowserV2: View {
                 onCancel: clearRenameState
             )
         }
-        .confirmationDialog("Aus Telegram löschen?", isPresented: Binding(
+        .sheet(isPresented: Binding(
             get: { pendingDeleteFile != nil || pendingDeleteFolder != nil || confirmBulkDelete },
             set: { if !$0 { pendingDeleteFile = nil; pendingDeleteFolder = nil; confirmBulkDelete = false } }
-        ), titleVisibility: .visible, presenting: deletionSelection) { selection in
-            if let folder = selection.folder {
-                Button("„\(folder.name)“ löschen", role: .destructive) { cloud.deleteFolder(folder) }
-                    .disabled(!folderIsEmpty(folder))
-            } else {
-                Button(selection.files.count == 1 ? "Datei dauerhaft löschen" : "\(selection.files.count) Dateien dauerhaft löschen", role: .destructive) {
-                    cloud.deleteFilesFromTelegram(selection.files)
-                    selectedFiles.removeAll(); isSelecting = false
-                }
+        )) {
+            if let selection = deletionSelection {
+            TypedConfirmationSheet(title: selection.folder == nil ? "Dateien dauerhaft löschen" : "Leeren Ordner löschen",
+                message: selection.folder.map { "Der leere Ordner „\($0.name)“ wird entfernt." } ?? "\(selection.files.count) Dateien werden dauerhaft aus Telegram gelöscht. Die Originale auf dem iPhone bleiben erhalten.",
+                phrase: DestructiveConfirmation.files) {
+                if let folder = selection.folder { if folderIsEmpty(folder) { cloud.deleteFolder(folder) } }
+                else { cloud.deleteFilesFromTelegram(selection.files); selectedFiles.removeAll(); isSelecting = false }
             }
-            Button("Abbrechen", role: .cancel) { }
-        } message: { selection in
-            if selection.folder != nil {
-                Text("Nur leere Ordner lassen sich löschen. Die Änderung wird im Telegram-Katalog gesichert.")
-            } else {
-                Text("Alle zugehörigen Telegram-Nachrichten werden dauerhaft gelöscht. Originale auf dem iPhone bleiben erhalten. Die automatische Fotosicherung überspringt bewusst gelöschte Medien künftig in diesem Kanal.")
             }
         }
     }
@@ -904,4 +896,5 @@ private extension View {
         }
     }
 }
+
 

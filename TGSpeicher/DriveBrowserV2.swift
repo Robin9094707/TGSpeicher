@@ -126,13 +126,12 @@ struct DriveBrowserV2: View {
                 selectedFiles.removeAll(); isSelecting = false; showingBulkTags = false
             }
         }
-        .confirmationDialog("\(selectedFiles.count) ausgewählte Dateien aus Telegram löschen?", isPresented: $confirmBulkDelete, titleVisibility: .visible) {
-            Button("Aus Telegram löschen", role: .destructive) {
-                let entries = selectedEntries
+        .sheet(isPresented: $confirmBulkDelete) {
+            let entries = selectedEntries
+            TypedConfirmationSheet(title: "Dateien dauerhaft löschen", message: "\(entries.count) Dateien werden aus Telegram gelöscht.", phrase: DestructiveConfirmation.files) {
                 selectedFiles.removeAll(); isSelecting = false
                 cloud.deleteFilesFromTelegram(entries)
             }
-            Button("Abbrechen", role: .cancel) { }
         }
     }
 
@@ -181,7 +180,7 @@ struct DriveBrowserV2: View {
                             .buttonStyle(.plain)
                             .contextMenu {
                                 Button("Herunterladen", systemImage: "arrow.down.doc") { cloud.downloadAndReassemble(file) }
-                                Button("Aus Telegram löschen", systemImage: "trash", role: .destructive) { cloud.deleteFileFromTelegram(file) }
+                                Button("Aus Telegram löschen", systemImage: "trash", role: .destructive) { selectedFiles = [file.id]; confirmBulkDelete = true }
                             }
                         }
                     }
@@ -460,4 +459,5 @@ private extension View {
         }
     }
 }
+
 

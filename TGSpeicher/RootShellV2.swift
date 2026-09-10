@@ -16,6 +16,9 @@ struct V2RootView: View {
     @StateObject private var telemetry: TelegramTransferTelemetry
     @StateObject private var usageScanner: TelegramUsageScanner
     @StateObject private var music: MusicPlayer
+    @StateObject private var channel: MusicChannelManager
+    @StateObject private var activities: TransferActivityController
+    @State private var selectedTab = 0
     @StateObject private var photoBackup: PhotoBackupManager
 
     init(telegram: TelegramClient, cloud: CloudStore) {
@@ -24,16 +27,20 @@ struct V2RootView: View {
         let preferences = AppPreferences()
         let network = TGNetworkMonitor()
         let queue = UploadQueueManager(cloud: cloud, preferences: preferences, network: network)
-        _music = StateObject(wrappedValue: MusicPlayer(cloud: cloud, telegram: telegram))
+        _music = StateObject(wrappedValue: MusicPlayer(cloud: cloud, telegram: telegram, network: network))
         _preferences = StateObject(wrappedValue: preferences)
         _queue = StateObject(wrappedValue: queue)
         _remoteImporter = StateObject(wrappedValue: RemoteURLImporter())
         _network = StateObject(wrappedValue: network)
         _proxy = StateObject(wrappedValue: TGProxyManager())
-        _runtime = StateObject(wrappedValue: TransferRuntime(cloud: cloud, preferences: preferences))
-        _telemetry = StateObject(wrappedValue: TelegramTransferTelemetry(cloud: cloud, telegram: telegram))
+        let telemetry = TelegramTransferTelemetry(cloud: cloud, telegram: telegram)
+        let backup = PhotoBackupManager(cloud: cloud, queue: queue, telegram: telegram)
+        _runtime = StateObject(wrappedValue: TransferRuntime(cloud: cloud, preferences: preferences, backup: backup))
+        _telemetry = StateObject(wrappedValue: telemetry)
+        _channel = StateObject(wrappedValue: MusicChannelManager(cloud: cloud, telegram: telegram, queue: queue, network: network))
+        _activities = StateObject(wrappedValue: TransferActivityController(cloud: cloud, queue: queue, backup: backup, telemetry: telemetry))
         _usageScanner = StateObject(wrappedValue: TelegramUsageScanner(telegram: telegram))
-        _photoBackup = StateObject(wrappedValue: PhotoBackupManager(cloud: cloud, queue: queue, telegram: telegram))
+        _photoBackup = StateObject(wrappedValue: backup)
     }
 
     var body: some View {
@@ -52,15 +59,22 @@ struct V2RootView: View {
                     runtime: runtime,
                     telemetry: telemetry,
                     usageScanner: usageScanner,
-                    photoBackup: photoBackup
+                    photoBackup: photoBackup,
+                    selectedTab: $selectedTab
                 )
             default:
                 LoginView(telegram: telegram)
             }
         }
         .environmentObject(music)
+        .environmentObject(channel)
         .preferredColorScheme(preferences.appearance.colorScheme)
-        .onChange(of: scenePhase) { _, phase in if phase == .active { telegram.refreshUploadLimits() } }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { telegram.refreshUploadLimits(); music.refreshOfflineLibrary(); handleShortcut() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .uploadShortcutRequested)) { _ in handleShortcut() }
+        .onChange(of: cloud.recoveryReady) { _, ready in if ready { handleShortcut() } }
+        .onOpenURL { url in if url.scheme == "tgspeicher", url.host == "transfers" { selectedTab = 2 } }
         .alert("Telegram", isPresented: Binding(
             get: { telegram.lastError != nil && !photoBackup.isRunning },
             set: { if !$0 { telegram.clearError() } }
@@ -104,6 +118,23 @@ struct V2RootView: View {
         }
         .onAppear {
             photoBackup.activateRestoredNightModeIfNeeded()
+            handleShortcut()
+        }
+    }
+    private func handleShortcut() {
+        guard scenePhase == .active, telegram.authorizationStage == .ready, cloud.recoveryReady,
+              let action = UploadShortcutRequest.consume() else { return }
+        switch action {
+        case "backup", "night":
+            selectedTab = 1
+            photoBackup.resumeBackup(nightMode: action == "night")
+        case "inbox":
+            selectedTab = 2; cloud.refreshLocalInbox()
+            let pendingPaths = Set(queue.items.filter { $0.state != .completed }.map(\.displayName))
+            queue.enqueue(urls: cloud.localInboxFiles.filter { !pendingPaths.contains($0.lastPathComponent) }, folderID: nil)
+            queue.resume()
+        case "resume": selectedTab = 2; queue.resume()
+        default: break
         }
     }
 }
@@ -121,9 +152,10 @@ struct DriveShellV2: View {
     @ObservedObject var telemetry: TelegramTransferTelemetry
     @ObservedObject var usageScanner: TelegramUsageScanner
     @ObservedObject var photoBackup: PhotoBackupManager
+    @Binding var selectedTab: Int
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             NavigationStack {
                 OptimizedDriveBrowserV2(
                     folderID: nil,
@@ -136,24 +168,28 @@ struct DriveShellV2: View {
             }
             .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
             .tabItem { Label("Dateien", systemImage: "externaldrive.fill.badge.icloud") }
+            .tag(0)
 
             NavigationStack {
                 PhotoBackupView(manager: photoBackup, cloud: cloud, telemetry: telemetry)
             }
             .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
             .tabItem { Label("Fotos", systemImage: "photo.stack.fill") }
+            .tag(1)
 
             NavigationStack {
                 TransfersViewV2(cloud: cloud, queue: queue, remoteImporter: remoteImporter, telemetry: telemetry)
             }
             .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
             .tabItem { Label("Übertragungen", systemImage: "arrow.up.arrow.down.circle.fill") }
+            .tag(2)
 
             NavigationStack {
                 MusicLibraryView(cloud: cloud)
             }
             .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
             .tabItem { Label("Musik", systemImage: "music.note") }
+            .tag(3)
 
             NavigationStack {
                 SettingsV2(
@@ -169,6 +205,7 @@ struct DriveShellV2: View {
             }
             .safeAreaPadding(.bottom, music.queue.current == nil ? 0 : 76)
             .tabItem { Label("Einstellungen", systemImage: "gearshape.fill") }
+            .tag(4)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 4) { RecoveryStatusBanner(cloud: cloud); DeletionStatusBanner(cloud: cloud) }
@@ -215,4 +252,5 @@ private struct LiveCompactTransferGlass: View {
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
     }
 }
+
 

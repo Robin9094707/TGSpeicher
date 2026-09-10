@@ -378,11 +378,11 @@ final class CloudStore: ObservableObject {
         createdAt: Date,
         mimeType: String?
     ) {
-        upload?.status = descriptor.kind == "video" ? "Video wird gesendet …" : "Foto wird gesendet …"
+        upload?.status = descriptor.kind == "audio" ? "Musik wird gesendet …" : (descriptor.kind == "video" ? "Video wird gesendet …" : "Foto wird gesendet …")
         UIApplication.shared.isIdleTimerDisabled = true
         let manifest = TGManifest(
             format: 3,
-            kind: descriptor.kind == "video" ? "nativeVideo" : "nativePhoto",
+            kind: descriptor.kind == "audio" ? "nativeAudio" : (descriptor.kind == "video" ? "nativeVideo" : "nativePhoto"),
             fileID: fileID,
             folderID: folderID,
             parentFolderID: nil,
@@ -412,7 +412,15 @@ final class CloudStore: ObservableObject {
             videoThumbnail = NSNull()
         }
         let content: [String: Any]
-        if descriptor.kind == "video" {
+        if descriptor.kind == "audio" {
+            content = [
+                "@type": "inputMessageAudio",
+                "audio": ["@type": "inputFileLocal", "path": url.path],
+                "album_cover_thumbnail": NSNull(), "duration": descriptor.duration,
+                "title": descriptor.title ?? (url.lastPathComponent as NSString).deletingPathExtension,
+                "performer": descriptor.performer ?? "", "caption": caption
+            ]
+        } else if descriptor.kind == "video" {
             content = [
                 "@type": "inputMessageVideo",
                 "video": ["@type": "inputFileLocal", "path": url.path],
@@ -446,7 +454,7 @@ final class CloudStore: ObservableObject {
             guard let self else { return }
             if response["@type"] as? String == "error" {
                 let reason = response["message"] as? String ?? ""
-                let rejectedMedia = ["PHOTO_INVALID", "PHOTO_EXT_INVALID", "IMAGE_PROCESS_FAILED", "VIDEO_CONTENT_TYPE_INVALID", "MEDIA_EMPTY", "PHOTO_INVALID_DIMENSIONS", "MEDIA_CAPTION_TOO_LONG"]
+                let rejectedMedia = ["AUDIO_CONTENT_TYPE_INVALID", "AUDIO_INVALID", "PHOTO_INVALID", "PHOTO_EXT_INVALID", "IMAGE_PROCESS_FAILED", "VIDEO_CONTENT_TYPE_INVALID", "MEDIA_EMPTY", "PHOTO_INVALID_DIMENSIONS", "MEDIA_CAPTION_TOO_LONG"]
                     .contains { reason.hasPrefix($0) }
                 if !rejectedMedia || TelegramClient.int(response["code"]) != 400 {
                     self.failUpload(self.friendlyTelegramError(response), chatID: chatID)
@@ -480,7 +488,7 @@ final class CloudStore: ObservableObject {
                     storedName: url.lastPathComponent)],
                 mimeType: mimeType, tagIDs: tagIDs, sha256: nil, sourceKey: sourceKey,
                 telegramChatID: chatID,
-                storageKind: descriptor.kind == "video" ? "nativeVideo" : "nativePhoto"
+                storageKind: descriptor.kind == "audio" ? "nativeAudio" : (descriptor.kind == "video" ? "nativeVideo" : "nativePhoto")
             )
             self.index.files.removeAll { $0.id == fileID }
             self.index.files.append(entry)
@@ -1252,4 +1260,5 @@ final class CloudStore: ObservableObject {
         return true
     }
 }
+
 

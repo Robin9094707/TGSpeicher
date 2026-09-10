@@ -185,9 +185,12 @@ struct FileDetailV2: View {
         .sheet(isPresented: $showingCloudPreview) {
             if let file { CloudMediaPreviewSheet(file: file, cloud: cloud) }
         }
-        .confirmationDialog("Diese Datei dauerhaft aus Telegram löschen?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            if let file { Button("Aus Telegram löschen", role: .destructive) { cloud.deleteFileFromTelegram(file) } }
-            Button("Abbrechen", role: .cancel) { }
+        .sheet(isPresented: $confirmDelete) {
+            if let file {
+                TypedConfirmationSheet(title: "Datei dauerhaft löschen", message: "„\(file.name)“ und die zugehörigen Nachrichten werden aus Telegram gelöscht.", phrase: DestructiveConfirmation.files) {
+                    cloud.deleteFileFromTelegram(file)
+                }
+            }
         }
     }
 }
@@ -246,4 +249,5 @@ struct SearchHubV2: View {
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Name oder Tag")
     }
 }
+
 

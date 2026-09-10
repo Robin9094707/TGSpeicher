@@ -32,7 +32,7 @@ struct MusicLibraryView: View {
                         }
                     }
                     Picker("Musikansicht", selection: $section) {
-                        Text("Titel").tag(0); Text("Playlists").tag(1)
+                        Text("Titel").tag(0); Text("Playlists").tag(1); Text("Offline").tag(2); Text("Kanal").tag(3)
                     }.pickerStyle(.segmented)
                 }.padding(.vertical, 5)
             }
@@ -63,8 +63,24 @@ struct MusicLibraryView: View {
                             description: Text("Lade Audiodateien im Bereich „Dateien“ in deine Telegram-Ordner. Sie erscheinen hier automatisch. Bereits hochgeladene Titel kannst du direkt zu Playlists hinzufügen."))
                     }
                 } header: { Text("Musik aus deinen Dateien") } footer: {
-                    Text("Cover und Tags werden beim Abspielen eingelesen. Mit „Metadaten einlesen“ kannst du deine Bibliothek vorab durchsuchen. Die verfügbaren Formate hängen von iOS ab.")
+                    Text("Cover und Tags sichtbarer Titel werden automatisch nacheinander geladen und auf diesem Gerät gespeichert. Die verfügbaren Formate hängen von iOS ab.")
                 }
+            } else if section == 2 {
+                Section {
+                    let downloads = music.offlineFiles.filter { music.matches($0, search: search) }
+                    if downloads.isEmpty { ContentUnavailableView("Keine Offline-Musik", systemImage: "arrow.down.circle", description: Text("Halte einen Titel gedrückt und wähle „Offline laden“.")) }
+                    else {
+                        Button("Alle offline abspielen", systemImage: "play.fill") { music.play(downloads.map(\.id)) }
+                        ForEach(downloads) { file in
+                            MusicTrackRow(file: file).contentShape(Rectangle())
+                                .onTapGesture { music.play(downloads.map(\.id), startingAt: file.id) }
+                                .contextMenu { MusicTrackMenu(file: file, cloud: cloud) }
+                        }
+                    }
+                } header: { Text("Auf diesem Gerät · \(music.offlineFiles.count) Titel") }
+                footer: { Text("Downloads bleiben lokal erhalten. Cover und Tags werden bei Verbindung automatisch ergänzt.") }
+            } else if section == 3 {
+                MusicChannelSection(cloud: cloud)
             } else {
                 Section {
                     Button("Playlist erstellen", systemImage: "plus.circle.fill") { name = ""; newPlaylist = true }
@@ -97,6 +113,8 @@ struct MusicLibraryView: View {
             }
         }
         .navigationTitle("Musik")
+        .onAppear { music.refreshOfflineLibrary() }
+        .refreshable { music.refreshOfflineLibrary() }
         .searchable(text: $search, prompt: "Titel, Künstler, Album oder Dateiname")
         .alert("Neue Playlist", isPresented: $newPlaylist) {
             TextField("Name", text: $name)
@@ -127,6 +145,7 @@ struct MusicTrackRow: View {
                 Text(musicTime(duration)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
         }.padding(.vertical, 3)
+        .task(id: "\(file.id)-\(music.offlineRevision)") { music.prefetchMetadata([file]) }
     }
 }
 
@@ -138,6 +157,12 @@ struct MusicTrackMenu: View {
         Button("Abspielen", systemImage: "play.fill") { music.play([file.id]) }
         Button("Als Nächstes abspielen", systemImage: "text.line.first.and.arrowtriangle.forward") { music.enqueue(file.id, next: true) }
         Button("An Warteschlange anhängen", systemImage: "text.badge.plus") { music.enqueue(file.id, next: false) }
+        if music.offlineURL(for: file) == nil {
+            Button("Offline laden", systemImage: "arrow.down.circle") { music.downloadOffline(file) }
+                .disabled(music.offlineBusy || cloud.isDownloading)
+        } else {
+            Button("Offline-Download entfernen", systemImage: "trash", role: .destructive) { music.removeOffline(file) }
+        }
         Menu("Zur Playlist hinzufügen", systemImage: "music.note.list") {
             if cloud.musicLibrary.playlists.isEmpty { Text("Zuerst im Musikbereich eine Playlist erstellen") }
             ForEach(cloud.musicLibrary.playlists) { list in
@@ -394,7 +419,7 @@ struct MusicPlayerSheet: View {
         } message: { Text(music.error ?? "") }
     }
     private var queuePanel: some View {
-        VStack(spacing: 0) {
+        LazyVStack(spacing: 0) {
             ForEach(Array(music.queue.ids.enumerated()), id: \.element) { index, id in
                 HStack {
                     Button { music.jumpTo(id) } label: {
@@ -473,3 +498,4 @@ private func metadataLabel(_ key: String) -> String {
     let labels = [("tit2", "Titel"), ("tpe1", "Künstler"), ("tpe2", "Albumkünstler"), ("talb", "Album"), ("trck", "Titelnummer"), ("tpos", "CD-Nummer"), ("tcon", "Genre"), ("tdrc", "Veröffentlichung"), ("tyer", "Jahr"), ("uslt", "Liedtext"), ("comm", "Kommentar"), ("tcom", "Komponist"), ("copyright", "Urheberrecht"), ("albumartist", "Albumkünstler"), ("albumname", "Album"), ("artist", "Künstler"), ("title", "Titel"), ("creationdate", "Datum"), ("description", "Beschreibung"), ("genre", "Genre"), ("lyrics", "Liedtext")]
     return labels.first { lower.contains($0.0) }?.1 ?? key
 }
+

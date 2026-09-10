@@ -72,7 +72,47 @@ struct RecoveryTests {
         try testDeletionQueue()
         try testChunker()
         try testMusic()
+        try testMusicUpgrade()
         print("\(checks) recovery checks passed")
+    }
+
+    static func testMusicUpgrade() throws {
+        let legacy = Data(#"{"version":1,"playlists":[],"deletedPlaylists":[],"tracks":[]}"#.utf8)
+        let decoded = try JSONDecoder().decode(MusicLibrary.self, from: legacy)
+        check(decoded.channel == nil, "3.2 music library decodes without a channel or destructive migration")
+        let original = QueuedUpload(localPath: "/queue/track.mp3", displayName: "track.mp3", folderID: nil, tagIDs: [], byteSize: 100)
+        var payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as! [String: Any]
+        payload.removeValue(forKey: "musicDestinationChatID"); payload.removeValue(forKey: "musicDescriptor")
+        let oldQueue = try JSONDecoder().decode(QueuedUpload.self, from: JSONSerialization.data(withJSONObject: payload))
+        check(oldQueue.musicDestinationChatID == nil && oldQueue.id == original.id, "3.2 queued uploads retain identity and original default destination")
+        var queued = original
+        queued.musicDestinationChatID = -10077
+        queued.musicDescriptor = NativeMediaUploadDescriptor(kind: "audio", width: 0, height: 0, duration: 120, title: "Titel", performer: "RJ")
+        let queueRoundTrip = try JSONDecoder().decode(QueuedUpload.self, from: JSONEncoder().encode(queued))
+        check(queueRoundTrip == queued, "music channel and native audio tags survive interrupted queue staging")
+        var library = decoded
+        library.channel = MusicChannelChoice(chatID: -10077, title: "Musik", updatedAt: 10)
+        let id = UUID()
+        library.playlists = [MusicPlaylist(name: "Bleibt erhalten", trackIDs: [id])]
+        var changed = library
+        changed.channel = MusicChannelChoice(chatID: -10088, title: "Neu", updatedAt: 20)
+        check(changed.merging(library).channel?.chatID == -10088, "stale snapshot cannot undo a newer channel choice")
+        changed.channel = MusicChannelChoice(chatID: nil, title: "Deaktiviert", updatedAt: 30)
+        let merged = library.merging(changed)
+        check(merged.channel?.chatID == nil && merged.playlists == library.playlists, "disabling music channel keeps playlists and wins over stale selection")
+        let file = CloudFileEntry(id: id, name: "Titel.mp3", totalSize: 100,
+            chunks: [CloudChunk(index: 1, count: 1, telegramMessageID: 1 << 20, telegramFileID: nil, remoteUniqueID: nil, size: 100, storedName: "Titel.mp3")],
+            mimeType: "audio/mpeg", telegramChatID: -10077, storageKind: "nativeAudio")
+        let snapshot = CatalogSnapshot(revision: 1, createdAt: Date(), folders: [], files: [file], tags: [], recovery: RecoveryMetadata(accountID: 99, music: merged))
+        let restored = try CatalogCodec.decode(CatalogCodec.encode(snapshot), accountID: 99)
+        check(restored.files[0] == file && restored.recovery?.music?.playlists == library.playlists,
+            "channel switch archive retains exact original audio message, file and playlist references")
+        let descriptor = try JSONDecoder().decode(NativeMediaUploadDescriptor.self, from: Data(#"{"kind":"video","width":1920,"height":1080,"duration":2}"#.utf8))
+        check(descriptor.title == nil && descriptor.kind == "video", "existing photo/video descriptors decode unchanged")
+        check(!DestructiveConfirmation.matches("", phrase: DestructiveConfirmation.reset), "empty confirmation cannot reset session")
+        check(!DestructiveConfirmation.matches("ABMELDEN ", phrase: DestructiveConfirmation.logout), "logout requires the exact phrase")
+        check(!DestructiveConfirmation.matches("Ich möchte", phrase: DestructiveConfirmation.files), "partial sentence cannot delete Telegram files")
+        check(DestructiveConfirmation.matches(DestructiveConfirmation.files, phrase: DestructiveConfirmation.files), "complete deliberate deletion sentence is accepted")
     }
 
     static func testMusic() throws {
@@ -327,3 +367,4 @@ struct RecoveryTests {
         }
     }
 }
+
