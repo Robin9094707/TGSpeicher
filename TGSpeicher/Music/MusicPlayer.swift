@@ -402,9 +402,9 @@ final class MusicPlayer: ObservableObject {
                 player.playImmediately(atRate: rate)
             }
 
-            // Never run a second AVAsset range scan beside remote playback. Native
-            // Telegram audio exposes title/performer/thumbnail directly via getMessage;
-            // local files can be inspected without competing for TDLib ranges.
+            // Metadata and artwork are intentionally loaded only for the currently
+            // selected track. Opening or scrolling the music library never triggers
+            // remote metadata/thumbnail traffic anymore.
             if localURL != nil {
                 metadataTask = Task { [weak self] in
                     let result = await MusicMetadata.readLocal(asset)
@@ -682,30 +682,11 @@ final class MusicPlayer: ObservableObject {
         return covers.object(forKey: id.uuidString as NSString)
     }
 
-    /// List rows call this frequently. The automatic path intentionally never opens a
-    /// remote AVAsset. It only checks our small local cover cache and, for native
-    /// Telegram audio, asks TDLib for the message metadata/thumbnail serially.
+    /// Library rows deliberately do not trigger metadata or artwork I/O anymore.
+    /// The currently playing track is hydrated by loadCurrent(...), which keeps
+    /// Telegram/AVFoundation work bounded to one track at a time.
     func prefetchMetadata(_ files: [CloudFileEntry]) {
-        guard canAccess, UIApplication.shared.applicationState == .active else { return }
-        for file in files.prefix(24) {
-            loadCachedCoverIfNeeded(for: file)
-            guard network.isConnected,
-                  player.currentItem == nil,
-                  file.storageKind == "nativeAudio",
-                  pendingPrefetch.count < 12 else { continue }
-
-            let current = cloud.musicLibrary.tracks[file.id]
-            let hasText = current?.title != nil && current?.artist != nil && current?.duration != nil
-            let hasCover = covers.object(forKey: file.id.uuidString as NSString) != nil || coverFileExists(for: file)
-            if hasText && hasCover { continue }
-
-            let key = metadataStampKey(file)
-            let last = UserDefaults.standard.double(forKey: key)
-            guard Date().timeIntervalSince1970 - last > 86_400,
-                  pendingPrefetchIDs.insert(file.id).inserted else { continue }
-            pendingPrefetch.append(file)
-        }
-        startPrefetchWorker()
+        // Intentionally disabled for stability.
     }
 
     private func startPrefetchWorker() {
@@ -754,43 +735,8 @@ final class MusicPlayer: ObservableObject {
     }
 
     func scanMetadata() {
-        guard canAccess, UIApplication.shared.applicationState == .active, let accountID else { return }
         cancelMetadataScan()
-        guard player.currentItem == nil else {
-            metadataStatus = "Pausiere zuerst die Wiedergabe, damit der Scan nicht mit dem Player konkurriert."
-            return
-        }
-        let files = availableFiles
-        guard !files.isEmpty else { return }
-        isScanningMetadata = true
-        metadataStatus = "Metadaten-Scan wird vorbereitet …"
-
-        manualScanTask = Task { [weak self] in
-            guard let self else { return }
-            var completed = 0
-            for file in files {
-                guard !Task.isCancelled,
-                      self.player.currentItem == nil,
-                      UIApplication.shared.applicationState == .active,
-                      self.accountID == accountID else { break }
-
-                self.metadataStatus = "Cover & Tags · \(completed + 1) / \(files.count)"
-                var result: MusicMetadata.Result?
-                if let local = self.offlineURL(for: file) {
-                    result = await MusicMetadata.readLocal(AVURLAsset(url: local))
-                } else if file.storageKind == "nativeAudio", self.network.isConnected {
-                    result = await self.fetchTelegramAudioMetadata(file: file, accountID: accountID, includeCover: true)
-                }
-                guard !Task.isCancelled else { break }
-                if let result { self.applyMetadata(result, to: file, makeCurrentArtwork: false) }
-                completed += 1
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-            guard !Task.isCancelled else { return }
-            self.isScanningMetadata = false
-            self.manualScanTask = nil
-            self.metadataStatus = "Cover & Tags aktualisiert · \(completed) Titel geprüft"
-        }
+        metadataStatus = "Cover & Tags werden aus Stabilitätsgründen erst beim Abspielen des jeweiligen Titels geladen."
     }
 
     private func fetchTelegramAudioMetadata(
@@ -1081,7 +1027,8 @@ final class MusicPlayer: ObservableObject {
             case .success:
                 self.offlineURLs[request.file.id] = destination
                 self.offlineRevision += 1
-                self.prefetchMetadata([request.file])
+                // Do not inspect metadata or artwork here. The file may never be played,
+                // and background/offline completion must stay lightweight.
             }
         }
     }
