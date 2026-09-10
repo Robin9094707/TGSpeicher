@@ -63,7 +63,7 @@ struct MusicLibraryView: View {
                             description: Text("Lade Audiodateien im Bereich „Dateien“ in deine Telegram-Ordner. Sie erscheinen hier automatisch. Bereits hochgeladene Titel kannst du direkt zu Playlists hinzufügen."))
                     }
                 } header: { Text("Musik aus deinen Dateien") } footer: {
-                    Text("Cover und Tags sichtbarer Titel werden automatisch nacheinander geladen und auf diesem Gerät gespeichert. Die verfügbaren Formate hängen von iOS ab.")
+                    Text("Cover und Tags werden aus Stabilitätsgründen erst geladen, wenn du den jeweiligen Titel abspielst.")
                 }
             } else if section == 2 {
                 Section {
@@ -78,7 +78,7 @@ struct MusicLibraryView: View {
                         }
                     }
                 } header: { Text("Auf diesem Gerät · \(music.offlineFiles.count) Titel") }
-                footer: { Text("Downloads bleiben lokal erhalten. Cover und Tags werden bei Verbindung automatisch ergänzt.") }
+                footer: { Text("Downloads bleiben lokal erhalten. Cover und Tags werden erst beim Abspielen des jeweiligen Titels ergänzt.") }
             } else if section == 3 {
                 MusicChannelSection(cloud: cloud)
             } else {
@@ -100,13 +100,8 @@ struct MusicLibraryView: View {
                 } footer: { Text("Playlists enthalten Verknüpfungen zu deinen Originaldateien. Sie werden automatisch im Telegram-Katalog gesichert.") }
             }
             Section {
-                if music.isScanningMetadata {
-                    HStack { ProgressView(); Text(music.metadataStatus).font(.caption); Spacer(); Button("Stoppen") { music.cancelMetadataScan() } }
-                } else {
-                    if !music.metadataStatus.isEmpty { Text(music.metadataStatus).font(.caption).foregroundStyle(.secondary) }
-                    Button("Metadaten einlesen", systemImage: "sparkle.magnifyingglass") { music.scanMetadata() }
-                        .disabled(music.availableFiles.isEmpty || !cloud.recoveryReady)
-                }
+                Label("Cover & Tags werden erst beim Abspielen eines Titels geladen.", systemImage: "music.note")
+                    .font(.caption).foregroundStyle(.secondary)
                 Button("Musikbibliothek jetzt in Telegram sichern", systemImage: "icloud.and.arrow.up") { cloud.syncCatalogNow() }
                     .disabled(!cloud.recoveryReady || cloud.isCatalogSyncing)
                 Text(cloud.catalogStatus).font(.caption).foregroundStyle(.secondary)
@@ -145,7 +140,6 @@ struct MusicTrackRow: View {
                 Text(musicTime(duration)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
         }.padding(.vertical, 3)
-        .task(id: "\(file.id)-\(music.offlineRevision)") { music.prefetchMetadata([file]) }
     }
 }
 
@@ -498,4 +492,3 @@ private func metadataLabel(_ key: String) -> String {
     let labels = [("tit2", "Titel"), ("tpe1", "Künstler"), ("tpe2", "Albumkünstler"), ("talb", "Album"), ("trck", "Titelnummer"), ("tpos", "CD-Nummer"), ("tcon", "Genre"), ("tdrc", "Veröffentlichung"), ("tyer", "Jahr"), ("uslt", "Liedtext"), ("comm", "Kommentar"), ("tcom", "Komponist"), ("copyright", "Urheberrecht"), ("albumartist", "Albumkünstler"), ("albumname", "Album"), ("artist", "Künstler"), ("title", "Titel"), ("creationdate", "Datum"), ("description", "Beschreibung"), ("genre", "Genre"), ("lyrics", "Liedtext")]
     return labels.first { lower.contains($0.0) }?.1 ?? key
 }
-
