@@ -10,8 +10,16 @@ final class MusicPlayer: ObservableObject {
     @Published private(set) var queue = MusicQueue()
     @Published private(set) var isPlaying = false
     @Published private(set) var isBuffering = false
-    @Published private(set) var elapsed = 0.0
-    @Published private(set) var duration = 0.0
+    // Only the progress controls observe this clock; lists and the root shell do not.
+    let clock = MusicPlaybackClock()
+    private(set) var elapsed: Double {
+        get { clock.elapsed }
+        set { if clock.elapsed != newValue { clock.elapsed = newValue } }
+    }
+    private(set) var duration: Double {
+        get { clock.duration }
+        set { if clock.duration != newValue { clock.duration = newValue } }
+    }
     @Published private(set) var artwork: UIImage?
     @Published private(set) var shuffle = false
     @Published private(set) var rate: Float = 1
@@ -39,6 +47,7 @@ final class MusicPlayer: ObservableObject {
     private var pendingPrefetchIDs = Set<UUID>()
     private var prefetchGeneration = UUID()
     private var offlineScanGeneration = UUID()
+    private var offlineScanTask: Task<[UUID: URL], Never>?
     private var offlineURLs: [UUID: URL] = [:]
 
     private var generation = UUID()
@@ -87,8 +96,8 @@ final class MusicPlayer: ObservableObject {
         periodic = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.75, preferredTimescale: 600),
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+        ) { [weak self] time in
+            Task { @MainActor in self?.tick(time: time) }
         }
 
         observations.append(player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] _, _ in
@@ -447,11 +456,11 @@ final class MusicPlayer: ObservableObject {
         }
     }
 
-    private func tick() {
-        let time = player.currentTime().seconds
-        if player.currentItem != nil, time.isFinite, resumeOffset == nil { elapsed = max(0, time) }
-        let length = player.currentItem?.duration.seconds ?? 0
-        if length.isFinite, length > 0 { duration = length }
+    private func tick(time: CMTime) {
+        // Never query an unprepared streaming item's duration on the UI thread.
+        // Duration is supplied once AVPlayerItem reports readyToPlay.
+        let seconds = time.seconds
+        if player.currentItem != nil, seconds.isFinite, resumeOffset == nil { elapsed = max(0, seconds) }
         checkSleep()
         if Date().timeIntervalSince(lastSaved) >= 12 {
             saveSession()
@@ -784,7 +793,7 @@ final class MusicPlayer: ObservableObject {
 
     private func telegramRequest(_ body: [String: Any]) async -> [String: Any]? {
         await withCheckedContinuation { continuation in
-            telegram.send(body) { response in continuation.resume(returning: response) }
+            telegram.send(body, timeout: 30) { response in continuation.resume(returning: response) }
         }
     }
 
@@ -916,6 +925,9 @@ final class MusicPlayer: ObservableObject {
     // MARK: - Offline library
 
     func refreshOfflineLibrary() {
+        offlineScanTask?.cancel()
+        offlineScanTask = nil
+        offlineScanGeneration = UUID()
         guard let accountID else {
             offlineURLs.removeAll()
             offlineRevision += 1
@@ -924,18 +936,22 @@ final class MusicPlayer: ObservableObject {
         let files = availableFiles
         let token = UUID()
         offlineScanGeneration = token
+        let scan = Task.detached(priority: .utility) { () -> [UUID: URL] in
+            var result: [UUID: URL] = [:]
+            let fm = FileManager.default
+            for file in files {
+                guard !Task.isCancelled else { return [:] }
+                let url = Self.offlineDestination(file, account: accountID)
+                guard fm.fileExists(atPath: url.path), url.fileByteSize == file.totalSize else { continue }
+                result[file.id] = url
+            }
+            return result
+        }
+        offlineScanTask = scan
         Task { [weak self] in
-            let found = await Task.detached(priority: .utility) { () -> [UUID: URL] in
-                var result: [UUID: URL] = [:]
-                let fm = FileManager.default
-                for file in files {
-                    let url = Self.offlineDestination(file, account: accountID)
-                    guard fm.fileExists(atPath: url.path), url.fileByteSize == file.totalSize else { continue }
-                    result[file.id] = url
-                }
-                return result
-            }.value
-            guard let self, self.accountID == accountID, self.offlineScanGeneration == token else { return }
+            let found = await scan.value
+            guard !scan.isCancelled, let self, self.accountID == accountID, self.offlineScanGeneration == token else { return }
+            self.offlineScanTask = nil
             if self.offlineURLs != found {
                 self.offlineURLs = found
                 self.offlineRevision += 1
@@ -1025,6 +1041,8 @@ final class MusicPlayer: ObservableObject {
             case .failure(let error):
                 self.error = error.localizedDescription
             case .success:
+                self.offlineScanTask?.cancel()
+                self.offlineScanGeneration = UUID()
                 self.offlineURLs[request.file.id] = destination
                 self.offlineRevision += 1
                 // Do not inspect metadata or artwork here. The file may never be played,
@@ -1046,6 +1064,8 @@ final class MusicPlayer: ObservableObject {
         }
         do {
             try FileManager.default.removeItem(at: url)
+            offlineScanTask?.cancel()
+            offlineScanGeneration = UUID()
             offlineURLs.removeValue(forKey: file.id)
             offlineRevision += 1
         } catch {
@@ -1054,6 +1074,7 @@ final class MusicPlayer: ObservableObject {
     }
 
     deinit {
+        offlineScanTask?.cancel()
         metadataTask?.cancel()
         prefetchTask?.cancel()
         manualScanTask?.cancel()
@@ -1138,3 +1159,4 @@ enum MusicMetadata {
         return Result(info: info, artwork: cover)
     }
 }
+

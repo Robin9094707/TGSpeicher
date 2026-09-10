@@ -296,27 +296,12 @@ final class TelegramAudioResource: NSObject, AVAssetResourceLoaderDelegate {
     /// Completes at most once and times out so a lost TDLib callback cannot retain an
     /// AVFoundation loading request forever.
     private func call(_ body: [String: Any], completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        var completed = false // Accessed only on `queue`.
-        let timeout = DispatchWorkItem { [weak self] in
-            guard let self, !self.stopped, !completed else { return }
-            completed = true
-            completion(.failure(RecoveryError.invalid("Telegram antwortet gerade nicht. Bitte Verbindung prüfen und erneut abspielen.")))
-        }
-        queue.asyncAfter(deadline: .now() + 30, execute: timeout)
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.telegram.send(body) { [weak self] response in
-                guard let self else { return }
-                self.queue.async {
-                    guard !self.stopped, !completed else { return }
-                    completed = true
-                    timeout.cancel()
-                    if response["@type"] as? String == "error" {
-                        completion(.failure(RecoveryError.invalid("Der Audiobereich konnte nicht von Telegram geladen werden. Bitte Verbindung und Zugriff prüfen.")))
-                    } else {
-                        completion(.success(response))
-                    }
-                }
+        telegram.send(body, callbackQueue: queue, timeout: 30) { [weak self] response in
+            guard let self, !self.stopped else { return }
+            if response["@type"] as? String == "error" {
+                completion(.failure(RecoveryError.invalid("Der Audiobereich konnte nicht von Telegram geladen werden. Bitte Verbindung und Zugriff prüfen.")))
+            } else {
+                completion(.success(response))
             }
         }
     }

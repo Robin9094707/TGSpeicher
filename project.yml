@@ -28,9 +28,9 @@ targets:
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_FILE: TGSpeicher/Info.plist
-        CURRENT_PROJECT_VERSION: 34
+        CURRENT_PROJECT_VERSION: 35
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: 3.3.1
+        MARKETING_VERSION: 3.3.2
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
     scheme:
@@ -48,11 +48,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: eu.simplexsmp.tgspeicher.liveactivity
         PRODUCT_NAME: TGSpeicherLiveActivity
         INFOPLIST_FILE: TGSpeicherLiveActivity/Info.plist
-        CURRENT_PROJECT_VERSION: 34
-        MARKETING_VERSION: 3.3.1
+        CURRENT_PROJECT_VERSION: 35
+        MARKETING_VERSION: 3.3.2
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1,2"
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_STYLE: Automatic
+

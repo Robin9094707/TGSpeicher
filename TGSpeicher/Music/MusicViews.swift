@@ -319,7 +319,7 @@ struct MusicMiniPlayer: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
         .musicGlass(corner: 22)
         .overlay(alignment: .bottom) {
-            if music.duration > 0 { ProgressView(value: min(1, music.elapsed / music.duration)).tint(.cyan).padding(.horizontal, 22).offset(y: -3) }
+            MusicMiniProgress(clock: music.clock)
         }
         .frame(maxWidth: 600)
     }
@@ -328,8 +328,6 @@ struct MusicMiniPlayer: View {
 struct MusicPlayerSheet: View {
     @EnvironmentObject private var music: MusicPlayer
     @Environment(\.dismiss) private var dismiss
-    @State private var seekValue = 0.0
-    @State private var seeking = false
     @State private var panel = 0
     var body: some View {
         NavigationStack {
@@ -347,15 +345,7 @@ struct MusicPlayerSheet: View {
                             if music.isBuffering { HStack { ProgressView().controlSize(.small); Text("Wird von Telegram geladen …").font(.caption) } }
                             if music.offlineBusy { HStack { ProgressView().controlSize(.small); Text("Offline-Datei wird geladen und geprüft …").font(.caption) } }
                         }
-                        VStack(spacing: 2) {
-                            Slider(value: Binding(get: { seeking ? seekValue : min(music.elapsed, max(1, music.duration)) }, set: { seekValue = $0 }),
-                                   in: 0...max(1, music.duration), onEditingChanged: { editing in
-                                if editing { seekValue = music.elapsed; seeking = true }
-                                else { seeking = false; music.seek(seekValue) }
-                            }).disabled(music.duration <= 0 || music.offlineBusy).tint(.cyan).accessibilityLabel("Wiedergabeposition")
-                            HStack { Text(musicTime(seeking ? seekValue : music.elapsed)); Spacer(); Text("−" + musicTime(max(0, music.duration - (seeking ? seekValue : music.elapsed)))) }
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        }
+                        MusicSeekControls(music: music, clock: music.clock, offlineBusy: music.offlineBusy)
                         HStack(spacing: 20) {
                             Button { music.toggleShuffle() } label: { Image(systemName: "shuffle").foregroundStyle(music.shuffle ? Color.cyan : .secondary) }
                                 .accessibilityLabel("Zufallswiedergabe: \(music.shuffle ? "Ein" : "Aus")")
@@ -491,4 +481,34 @@ private func metadataLabel(_ key: String) -> String {
     let lower = key.lowercased()
     let labels = [("tit2", "Titel"), ("tpe1", "Künstler"), ("tpe2", "Albumkünstler"), ("talb", "Album"), ("trck", "Titelnummer"), ("tpos", "CD-Nummer"), ("tcon", "Genre"), ("tdrc", "Veröffentlichung"), ("tyer", "Jahr"), ("uslt", "Liedtext"), ("comm", "Kommentar"), ("tcom", "Komponist"), ("copyright", "Urheberrecht"), ("albumartist", "Albumkünstler"), ("albumname", "Album"), ("artist", "Künstler"), ("title", "Titel"), ("creationdate", "Datum"), ("description", "Beschreibung"), ("genre", "Genre"), ("lyrics", "Liedtext")]
     return labels.first { lower.contains($0.0) }?.1 ?? key
+}
+
+
+private struct MusicMiniProgress: View {
+    @ObservedObject var clock: MusicPlaybackClock
+    var body: some View {
+        if clock.duration > 0 {
+            ProgressView(value: min(1, max(0, clock.elapsed / clock.duration)))
+                .tint(.cyan).padding(.horizontal, 22).offset(y: -3)
+        }
+    }
+}
+
+private struct MusicSeekControls: View {
+    let music: MusicPlayer
+    @ObservedObject var clock: MusicPlaybackClock
+    let offlineBusy: Bool
+    @State private var seekValue = 0.0
+    @State private var seeking = false
+    var body: some View {
+        VStack(spacing: 2) {
+            Slider(value: Binding(get: { seeking ? seekValue : min(clock.elapsed, max(1, clock.duration)) }, set: { seekValue = $0 }),
+                   in: 0...max(1, clock.duration), onEditingChanged: { editing in
+                if editing { seekValue = clock.elapsed; seeking = true }
+                else { seeking = false; music.seek(seekValue) }
+            }).disabled(clock.duration <= 0 || offlineBusy).tint(.cyan).accessibilityLabel("Wiedergabeposition")
+            HStack { Text(musicTime(seeking ? seekValue : clock.elapsed)); Spacer(); Text("−" + musicTime(max(0, clock.duration - (seeking ? seekValue : clock.elapsed)))) }
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+    }
 }

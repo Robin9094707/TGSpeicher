@@ -42,6 +42,11 @@ jobs:
           swiftc TGSpeicher/UploadQueueModels.swift TGSpeicher/Integrations/ConfirmationPolicy.swift TGSpeicher/Models.swift TGSpeicher/Music/MusicModels.swift TGSpeicher/Recovery/RecoveryCore.swift TGSpeicher/Recovery/DurableOutbox.swift TGSpeicher/Recovery/UploadPolicy.swift TGSpeicher/Recovery/DurableDeletionQueue.swift TGSpeicher/Chunker.swift Tests/RecoveryTests.swift -o /tmp/tgs-recovery-tests
           /tmp/tgs-recovery-tests
 
+      - name: Test audio callback isolation and timeout races
+        run: |
+          swiftc TGSpeicher/TelegramCallbackRegistry.swift Tests/TelegramCallbackTests.swift -o /tmp/tgs-callback-tests
+          /tmp/tgs-callback-tests
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -73,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="build/Build/Products/Release-iphoneos/TGSpeicher.app"
-          IPA_NAME="TGSpeicher-v3.3.1-unsigned.ipa"
+          IPA_NAME="TGSpeicher-v3.3.2-unsigned.ipa"
           test -d "$APP_PATH"
           test -d "$APP_PATH/PlugIns/TGSpeicherLiveActivity.appex"
           rm -rf Payload
@@ -86,8 +91,8 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v3.3.1-unsigned-IPA
-          path: TGSpeicher-v3.3.1-unsigned.ipa
+          name: TGSpeicher-v3.3.2-unsigned-IPA
+          path: TGSpeicher-v3.3.2-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
 
@@ -95,7 +100,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v3.3.1-build-log
+          name: TGSpeicher-v3.3.2-build-log
           path: xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
+

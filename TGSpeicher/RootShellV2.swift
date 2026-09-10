@@ -1,25 +1,24 @@
 import SwiftUI
 import UIKit
 
+/// Own the dependency graph once. Constructing shared dependencies in a View.init
+/// reruns queue recovery, disk reads/writes and photo cleanup on every parent update.
 @MainActor
-struct V2RootView: View {
-    @ObservedObject var telegram: TelegramClient
-    @ObservedObject var cloud: CloudStore
-
-    @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var preferences: AppPreferences
-    @StateObject private var queue: UploadQueueManager
-    @StateObject private var remoteImporter: RemoteURLImporter
-    @StateObject private var network: TGNetworkMonitor
-    @StateObject private var proxy: TGProxyManager
-    @StateObject private var runtime: TransferRuntime
-    @StateObject private var telemetry: TelegramTransferTelemetry
-    @StateObject private var usageScanner: TelegramUsageScanner
-    @StateObject private var music: MusicPlayer
-    @StateObject private var channel: MusicChannelManager
-    @StateObject private var activities: TransferActivityController
-    @State private var selectedTab = 0
-    @StateObject private var photoBackup: PhotoBackupManager
+private final class V2AppServices: ObservableObject {
+    let telegram: TelegramClient
+    let cloud: CloudStore
+    let preferences: AppPreferences
+    let queue: UploadQueueManager
+    let remoteImporter: RemoteURLImporter
+    let network: TGNetworkMonitor
+    let proxy: TGProxyManager
+    let runtime: TransferRuntime
+    let telemetry: TelegramTransferTelemetry
+    let usageScanner: TelegramUsageScanner
+    let music: MusicPlayer
+    let channel: MusicChannelManager
+    let activities: TransferActivityController
+    let photoBackup: PhotoBackupManager
 
     init(telegram: TelegramClient, cloud: CloudStore) {
         self.telegram = telegram
@@ -27,20 +26,69 @@ struct V2RootView: View {
         let preferences = AppPreferences()
         let network = TGNetworkMonitor()
         let queue = UploadQueueManager(cloud: cloud, preferences: preferences, network: network)
-        _music = StateObject(wrappedValue: MusicPlayer(cloud: cloud, telegram: telegram, network: network))
-        _preferences = StateObject(wrappedValue: preferences)
-        _queue = StateObject(wrappedValue: queue)
-        _remoteImporter = StateObject(wrappedValue: RemoteURLImporter())
-        _network = StateObject(wrappedValue: network)
-        _proxy = StateObject(wrappedValue: TGProxyManager())
         let telemetry = TelegramTransferTelemetry(cloud: cloud, telegram: telegram)
         let backup = PhotoBackupManager(cloud: cloud, queue: queue, telegram: telegram)
-        _runtime = StateObject(wrappedValue: TransferRuntime(cloud: cloud, preferences: preferences, backup: backup))
-        _telemetry = StateObject(wrappedValue: telemetry)
-        _channel = StateObject(wrappedValue: MusicChannelManager(cloud: cloud, telegram: telegram, queue: queue, network: network))
-        _activities = StateObject(wrappedValue: TransferActivityController(cloud: cloud, queue: queue, backup: backup, telemetry: telemetry))
-        _usageScanner = StateObject(wrappedValue: TelegramUsageScanner(telegram: telegram))
-        _photoBackup = StateObject(wrappedValue: backup)
+        self.preferences = preferences
+        self.network = network
+        self.queue = queue
+        self.telemetry = telemetry
+        self.photoBackup = backup
+        self.music = MusicPlayer(cloud: cloud, telegram: telegram, network: network)
+        self.remoteImporter = RemoteURLImporter()
+        self.proxy = TGProxyManager()
+        self.runtime = TransferRuntime(cloud: cloud, preferences: preferences, backup: backup)
+        self.channel = MusicChannelManager(cloud: cloud, telegram: telegram, queue: queue, network: network)
+        self.activities = TransferActivityController(cloud: cloud, queue: queue, backup: backup, telemetry: telemetry)
+        self.usageScanner = TelegramUsageScanner(telegram: telegram)
+    }
+}
+
+@MainActor
+struct V2RootView: View {
+    @StateObject private var services: V2AppServices
+
+    init(telegram: TelegramClient, cloud: CloudStore) {
+        // Keep construction inside StateObject's lazy autoclosure.
+        _services = StateObject(wrappedValue: V2AppServices(telegram: telegram, cloud: cloud))
+    }
+
+    var body: some View { V2RootContent(services: services) }
+}
+
+@MainActor
+private struct V2RootContent: View {
+    @ObservedObject var telegram: TelegramClient
+    @ObservedObject var cloud: CloudStore
+    @ObservedObject var preferences: AppPreferences
+    @ObservedObject var queue: UploadQueueManager
+    @ObservedObject var remoteImporter: RemoteURLImporter
+    @ObservedObject var network: TGNetworkMonitor
+    @ObservedObject var proxy: TGProxyManager
+    let runtime: TransferRuntime
+    @ObservedObject var telemetry: TelegramTransferTelemetry
+    @ObservedObject var usageScanner: TelegramUsageScanner
+    let music: MusicPlayer
+    let channel: MusicChannelManager
+    let activities: TransferActivityController
+    @ObservedObject var photoBackup: PhotoBackupManager
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var selectedTab = 0
+
+    init(services: V2AppServices) {
+        self.telegram = services.telegram
+        self.cloud = services.cloud
+        self.preferences = services.preferences
+        self.queue = services.queue
+        self.remoteImporter = services.remoteImporter
+        self.network = services.network
+        self.proxy = services.proxy
+        self.runtime = services.runtime
+        self.telemetry = services.telemetry
+        self.usageScanner = services.usageScanner
+        self.music = services.music
+        self.channel = services.channel
+        self.activities = services.activities
+        self.photoBackup = services.photoBackup
     }
 
     var body: some View {
@@ -261,3 +309,4 @@ private struct LiveCompactTransferGlass: View {
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
     }
 }
+

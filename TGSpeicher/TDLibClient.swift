@@ -48,7 +48,8 @@ final class TelegramClient: ObservableObject {
     private let receiverLock = NSLock()
     private let receiveQueue = DispatchQueue(label: "eu.simplexsmp.tgspeicher.tdlib.receive", qos: .userInitiated)
 
-    private var callbacks: [String: ([String: Any]) -> Void] = [:]
+    private let callbacks = TelegramCallbackRegistry()
+    private var lastActivityPublication = Date.distantPast // Receive queue only.
     private var observers: [UUID: ([String: Any]) -> Void] = [:]
     private var finalMessageCallbacks: [Int64: ([String: Any]) -> Void] = [:]
     private var earlyFinalMessages: [Int64: [String: Any]] = [:]
@@ -203,8 +204,8 @@ final class TelegramClient: ObservableObject {
         tdlibParametersConfigured = false
         loginCodeInfo = nil
 
+        callbacks.cancelAll()
         callbackLock.lock()
-        callbacks.removeAll()
         finalMessageCallbacks.removeAll()
         earlyFinalMessages.removeAll()
         callbackLock.unlock()
@@ -313,29 +314,34 @@ final class TelegramClient: ObservableObject {
 
     // MARK: Requests / final message IDs
 
-    func send(_ request: [String: Any], completion: (([String: Any]) -> Void)? = nil) {
+    func send(_ request: [String: Any], callbackQueue: DispatchQueue = .main, timeout: TimeInterval? = nil,
+              completion: (([String: Any]) -> Void)? = nil) {
         guard let id = activeClientID else {
-            DispatchQueue.main.async {
-                self.lastError = "Telegram ist noch nicht verbunden."
-                completion?(DurableOutbox.error("Telegram ist noch nicht verbunden."))
-            }
+            DispatchQueue.main.async { self.lastError = "Telegram ist noch nicht verbunden." }
+            callbackQueue.async { completion?(DurableOutbox.error("Telegram ist noch nicht verbunden.")) }
             return
         }
 
         var payload = request
         let type = request["@type"] as? String ?? "unknown"
+        var callbackToken: String?
         if let completion {
-            let token = UUID().uuidString
+            let token = callbacks.insert(queue: callbackQueue, timeout: timeout, completion: completion)
+            callbackToken = token
             payload["@extra"] = token
-            callbackLock.lock(); callbacks[token] = completion; callbackLock.unlock()
         }
 
         do {
             let data = try JSONSerialization.data(withJSONObject: payload)
-            guard let json = String(data: data, encoding: .utf8) else { return }
-            debug("→ \(type)")
+            guard let json = String(data: data, encoding: .utf8) else { throw RecoveryError.invalid("Die Telegram-Anfrage konnte nicht kodiert werden.") }
+            // Range traffic is very frequent and must not redraw the entire app
+            // or allocate a DateFormatter for every audio block.
+            if !["getMessage", "downloadFile", "getFileDownloadedPrefixSize"].contains(type) { debug("→ \(type)") }
             td_send(id, json)
         } catch {
+            if let token = callbackToken {
+                callbacks.resolve(token, response: DurableOutbox.error(error.localizedDescription))
+            }
             DispatchQueue.main.async { self.lastError = error.localizedDescription }
         }
     }
@@ -525,15 +531,18 @@ final class TelegramClient: ObservableObject {
            responseClient != Int(active) { return }
 
         let type = response["@type"] as? String ?? ""
-        DispatchQueue.main.async { self.lastActivityAt = Date() }
+        let now = Date()
+        if now.timeIntervalSince(lastActivityPublication) >= 1 {
+            lastActivityPublication = now
+            DispatchQueue.main.async { self.lastActivityAt = now }
+        }
 
         if let token = response["@extra"] as? String {
-            callbackLock.lock(); let callback = callbacks.removeValue(forKey: token); callbackLock.unlock()
-            if let callback { DispatchQueue.main.async { callback(response) } }
+            callbacks.resolve(token, response: response)
         }
 
         callbackLock.lock(); let currentObservers = Array(observers.values); callbackLock.unlock()
-        if !currentObservers.isEmpty { DispatchQueue.main.async { currentObservers.forEach { $0(response) } } }
+        if type.hasPrefix("update"), !currentObservers.isEmpty { DispatchQueue.main.async { currentObservers.forEach { $0(response) } } }
 
         switch type {
         case "updateAuthorizationState":
@@ -810,5 +819,6 @@ final class TelegramClient: ObservableObject {
         return nil
     }
 }
+
 
 
