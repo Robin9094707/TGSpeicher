@@ -8,16 +8,21 @@ import Foundation
 private final class MusicMetadataPersistenceCoordinator {
     static let shared = MusicMetadataPersistenceCoordinator()
 
-    private var pending: [ObjectIdentifier: DispatchWorkItem] = [:]
+    private struct PendingWrite {
+        let token: UUID
+        let work: DispatchWorkItem
+    }
+    private var pending: [ObjectIdentifier: PendingWrite] = [:]
 
     func schedule(store: CloudStore, accountID: Int64) {
         let key = ObjectIdentifier(store)
         guard pending[key] == nil else { return }
 
-        var work: DispatchWorkItem!
-        work = DispatchWorkItem { [weak self, weak store] in
-            self?.pending[key] = nil
-            guard !work.isCancelled, let store,
+        let token = UUID()
+        let work = DispatchWorkItem { [weak self, weak store] in
+            guard let self, self.pending[key]?.token == token else { return }
+            self.pending[key] = nil
+            guard let store,
                   store.telegram.savedMessagesChatID == accountID,
                   store.index.recovery?.accountID == accountID,
                   store.recoveryReady, !store.isRefreshing else { return }
@@ -27,7 +32,7 @@ private final class MusicMetadataPersistenceCoordinator {
             store.forceNextCatalog = true
             store.scheduleCatalogSync(delay: 3)
         }
-        pending[key] = work
+        pending[key] = PendingWrite(token: token, work: work)
 
         // Long enough to combine several sequential metadata reads, short enough that
         // discovered tags normally survive even if the user leaves the music screen.
@@ -36,7 +41,7 @@ private final class MusicMetadataPersistenceCoordinator {
 
     func cancelPending(for store: CloudStore) {
         let key = ObjectIdentifier(store)
-        pending.removeValue(forKey: key)?.cancel()
+        pending.removeValue(forKey: key)?.work.cancel()
     }
 }
 
