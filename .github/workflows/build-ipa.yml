@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="build/Build/Products/Release-iphoneos/TGSpeicher.app"
-          IPA_NAME="TGSpeicher-v3.3.0-unsigned.ipa"
+          IPA_NAME="TGSpeicher-v3.3.1-unsigned.ipa"
           test -d "$APP_PATH"
           test -d "$APP_PATH/PlugIns/TGSpeicherLiveActivity.appex"
           rm -rf Payload
@@ -86,8 +86,8 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v3.3.0-unsigned-IPA
-          path: TGSpeicher-v3.3.0-unsigned.ipa
+          name: TGSpeicher-v3.3.1-unsigned-IPA
+          path: TGSpeicher-v3.3.1-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
 
@@ -95,9 +95,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: TGSpeicher-v3.3.0-build-log
+          name: TGSpeicher-v3.3.1-build-log
           path: xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
-
-
