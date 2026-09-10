@@ -180,7 +180,7 @@ enum CatalogCodec {
         result.revision = max(local.revision, snapshot.revision)
         result.recovery = metadata
         repairReferences(&result)
-        return result
+        return result.separatingChannelMusic()
     }
 
     static func repairReferences(_ index: inout CloudIndex) {
@@ -202,3 +202,4 @@ extension CloudFileEntry {
             && chunks.allSatisfy { $0.count == first.count && ($0.telegramMessageID ?? 0) > 0 }
     }
 }
+

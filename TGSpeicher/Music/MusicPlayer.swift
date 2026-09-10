@@ -30,6 +30,7 @@ final class MusicPlayer: ObservableObject {
     @Published private(set) var metadataStatus = ""
     @Published var showingPlayer = false
     @Published var error: String?
+    @Published var pendingChannelRemovals: [CloudFileEntry] = []
 
     let cloud: CloudStore
     private let telegram: TelegramClient
@@ -68,7 +69,7 @@ final class MusicPlayer: ObservableObject {
     private var resumeOffset: Double?
 
     var currentFile: CloudFileEntry? {
-        queue.current.flatMap { id in cloud.index.files.first { $0.id == id } }
+        queue.current.flatMap { id in cloud.musicFile(id: id) }
     }
     var currentInfo: MusicTrackInfo? {
         queue.current.flatMap { cloud.musicLibrary.tracks[$0] }
@@ -78,7 +79,7 @@ final class MusicPlayer: ObservableObject {
     }
     var artist: String { currentInfo?.artist ?? "Unbekannter Künstler" }
     var availableFiles: [CloudFileEntry] {
-        cloud.index.files.filter { $0.isMusic && $0.isComplete && !cloud.deletingFileIDs.contains($0.id) }
+        cloud.musicFiles.filter { $0.isMusic && $0.isComplete && !cloud.deletingFileIDs.contains($0.id) }
     }
     var offlineFiles: [CloudFileEntry] {
         availableFiles.filter { offlineURLs[$0.id] != nil }
@@ -490,7 +491,12 @@ final class MusicPlayer: ObservableObject {
         try session.setActive(true)
     }
 
-    private func stop(clearQueue: Bool) {
+    func closePlayer() {
+        stop(clearQueue: true, preserveOfflineDownload: true)
+        if let accountID { UserDefaults.standard.removeObject(forKey: "music.session.v1.\(accountID)") }
+    }
+
+    private func stop(clearQueue: Bool, preserveOfflineDownload: Bool = false) {
         saveSession()
         generation = UUID()
         metadataTask?.cancel()
@@ -510,9 +516,12 @@ final class MusicPlayer: ObservableObject {
         artwork = nil
         elapsed = 0
         duration = 0
-        offlineGeneration = UUID()
-        offlineRequest = nil
-        offlineBusy = false
+        if !preserveOfflineDownload {
+            offlineGeneration = UUID()
+            offlineRequest = nil
+            offlineBusy = false
+        }
+        pendingChannelRemovals = []
         error = nil
         showingPlayer = false
         setSleep(minutes: nil)

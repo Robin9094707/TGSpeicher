@@ -1233,7 +1233,7 @@ final class CloudStore: ObservableObject {
                 let snapshot = CatalogSnapshot(revision: value.revision, createdAt: Date(), folders: candidateIndex.folders,
                     files: candidateIndex.files, tags: candidateIndex.tags, recovery: candidateIndex.recovery)
                 guard (try? CatalogCodec.validate(snapshot)) != nil else { continue }
-                index = candidateIndex
+                index = candidateIndex.separatingChannelMusic()
                 return
             }
         }
@@ -1260,5 +1260,6 @@ final class CloudStore: ObservableObject {
         return true
     }
 }
+
 
 

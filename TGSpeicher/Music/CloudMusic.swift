@@ -47,6 +47,19 @@ private final class MusicMetadataPersistenceCoordinator {
 
 extension CloudStore {
     var musicLibrary: MusicLibrary { index.recovery?.music ?? MusicLibrary() }
+    var musicFiles: [CloudFileEntry] {
+        let owned = index.files.filter(\.isMusic)
+        let ownedIDs = Set(owned.map(\.id))
+        return owned + (musicLibrary.channelFiles ?? []).filter { !ownedIDs.contains($0.id) }
+    }
+
+    func musicFile(id: UUID) -> CloudFileEntry? {
+        index.files.first { $0.id == id } ?? musicLibrary.channelFiles?.first { $0.id == id }
+    }
+
+    func removeChannelMusic(_ ids: Set<UUID>) {
+        editMusic { $0.removeChannelFiles(ids) }
+    }
 
     @discardableResult
     func editMusic(_ change: (inout MusicLibrary) -> Void) -> Bool {
@@ -68,6 +81,8 @@ extension CloudStore {
             && music.version == previousMusic.version
             && music.playlists == previousMusic.playlists
             && music.deletedPlaylists == previousMusic.deletedPlaylists
+            && music.channelFiles == previousMusic.channelFiles
+            && music.removedChannelFiles == previousMusic.removedChannelFiles
 
         index.recovery?.music = music
 
@@ -86,3 +101,4 @@ extension CloudStore {
         return true
     }
 }
+

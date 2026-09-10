@@ -246,7 +246,7 @@ struct OptimizedDriveBrowserV2: View {
             directory.updateSort(value)
         }
         .toolbar { browserToolbar }
-        .safeAreaInset(edge: .bottom) { bulkBar }
+        .safeAreaInset(edge: .top, spacing: 0) { bulkBar }
         .navigationDestination(item: $actionNavigationFileID) { fileID in
             FileDetailV2(fileID: fileID, cloud: cloud)
         }
@@ -317,18 +317,18 @@ struct OptimizedDriveBrowserV2: View {
                 onCancel: clearRenameState
             )
         }
-        .sheet(isPresented: Binding(
+        .alert("Wirklich löschen?", isPresented: Binding(
             get: { pendingDeleteFile != nil || pendingDeleteFolder != nil || confirmBulkDelete },
             set: { if !$0 { pendingDeleteFile = nil; pendingDeleteFolder = nil; confirmBulkDelete = false } }
-        )) {
-            if let selection = deletionSelection {
-            TypedConfirmationSheet(title: selection.folder == nil ? "Dateien dauerhaft löschen" : "Leeren Ordner löschen",
-                message: selection.folder.map { "Der leere Ordner „\($0.name)“ wird entfernt." } ?? "\(selection.files.count) Dateien werden dauerhaft aus Telegram gelöscht. Die Originale auf dem iPhone bleiben erhalten.",
-                phrase: DestructiveConfirmation.files) {
+        ), presenting: deletionSelection) { selection in
+            Button("Ja", role: .destructive) {
                 if let folder = selection.folder { if folderIsEmpty(folder) { cloud.deleteFolder(folder) } }
                 else { cloud.deleteFilesFromTelegram(selection.files); selectedFiles.removeAll(); isSelecting = false }
             }
-            }
+            Button("Nein", role: .cancel) { }
+        } message: { selection in
+            Text(selection.folder.map { "Den leeren Ordner „\($0.name)“ löschen?" }
+                ?? (selection.files.count == 1 ? "„\(selection.files.first?.name ?? "Datei")“ aus Telegram löschen?" : "\(selection.files.count) ausgewählte Dateien aus Telegram löschen?"))
         }
     }
 
@@ -374,13 +374,14 @@ struct OptimizedDriveBrowserV2: View {
 
     @ViewBuilder
     private var bulkBar: some View {
-        if isSelecting, !selectedFiles.isEmpty {
+        if isSelecting {
             BulkActionBar(
                 count: selectedFiles.count,
                 onMove: { showingBulkMove = true },
                 onTags: { showingBulkTags = true },
                 onDelete: { confirmBulkDelete = true },
-                onCancel: { selectedFiles.removeAll(); isSelecting = false }
+                onCancel: { selectedFiles.removeAll(); isSelecting = false },
+                onSelectAll: { selectedFiles = Set(directory.files.map(\.id)) }
             )
             .padding(.horizontal, 14)
             .padding(.bottom, 8)
@@ -896,5 +897,6 @@ private extension View {
         }
     }
 }
+
 
 

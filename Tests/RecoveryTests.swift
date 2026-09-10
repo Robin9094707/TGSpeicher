@@ -73,7 +73,52 @@ struct RecoveryTests {
         try testChunker()
         try testMusic()
         try testMusicUpgrade()
+        try testChannelSeparation()
         print("\(checks) recovery checks passed")
+    }
+
+    static func testChannelSeparation() throws {
+        let chat: Int64 = -10077
+        let message: Int64 = 55 << 20
+        let id = CatalogCodec.stableMediaID(hash: "telegram-audio:\(message)", chatID: chat)
+        let chunk = CloudChunk(index: 1, count: 1, telegramMessageID: message, telegramFileID: nil,
+                               remoteUniqueID: nil, size: 100, storedName: "Kanal.mp3")
+        let imported = CloudFileEntry(id: id, name: "Kanal.mp3", totalSize: 100, createdAt: Date(timeIntervalSince1970: 1000), modifiedAt: Date(timeIntervalSince1970: 1001), chunks: [chunk],
+                                      mimeType: "audio/mpeg", telegramChatID: chat, storageKind: "nativeAudio")
+        let owned = CloudFileEntry(name: "Mein Upload.mp3", totalSize: 100, createdAt: Date(timeIntervalSince1970: 1000), modifiedAt: Date(timeIntervalSince1970: 1001), chunks: [chunk],
+                                   mimeType: "audio/mpeg", telegramChatID: chat, storageKind: "nativeAudio")
+        let playlist = MusicPlaylist(name: "Gemischt", trackIDs: [imported.id, owned.id])
+        var old = CloudIndex(files: [imported, owned])
+        old.recovery = RecoveryMetadata(accountID: 99, music: MusicLibrary(playlists: [playlist]))
+        let migrated = old.separatingChannelMusic()
+        check(migrated.files == [owned], "legacy channel import leaves My Files while own upload in same channel stays")
+        check(migrated.recovery?.music?.channelFiles == [imported], "migration retains exact file IDs, chunks and original channel")
+        check(migrated.recovery?.music?.playlists == [playlist], "channel migration preserves playlist order and references")
+        let repeated = migrated.separatingChannelMusic()
+        check(repeated.files == migrated.files && repeated.recovery?.music == migrated.recovery?.music, "channel migration is idempotent")
+        let snapshot = CatalogSnapshot(revision: 1, createdAt: Date(), folders: [], files: migrated.files,
+                                       tags: [], recovery: migrated.recovery)
+        let restored = try CatalogCodec.decode(CatalogCodec.encode(snapshot), accountID: 99)
+        check(restored.files == [owned] && restored.recovery?.music?.channelFiles == [imported], "catalog round trip preserves separate owned and imported collections")
+        let stale = CatalogSnapshot(revision: 0, createdAt: Date(), folders: [], files: old.files, tags: [], recovery: old.recovery)
+        let merged = CatalogCodec.merge(stale, into: migrated, accountID: 99)
+        check(merged.files.map(\.id) == [owned.id] && merged.recovery?.music?.channelFiles?.count == 1,
+              "older catalog cannot move channel reference back into My Files or duplicate it")
+        var removed = migrated
+        removed.recovery?.music?.removeChannelFiles([imported.id, owned.id])
+        check(removed.files == [owned] && removed.recovery?.deletedFiles.isEmpty == true,
+              "removing channel references does not delete owned files or create Telegram deletion intents")
+        check(removed.recovery?.music?.channelFiles?.isEmpty == true && removed.recovery?.music?.playlists.first?.trackIDs == [owned.id],
+              "reference removal removes only imported playlist links")
+        let afterOldRestore = CatalogCodec.merge(stale, into: removed, accountID: 99)
+        check(afterOldRestore.files.map(\.id) == [owned.id] && afterOldRestore.recovery?.music?.channelFiles?.isEmpty == true,
+              "removed channel reference cannot return from a legacy snapshot")
+        var duplicate = migrated.recovery!.music!
+        duplicate.channelFiles = [imported, imported]
+        rejects("duplicate channel references rejected") { try duplicate.validate() }
+        let legacy = Data(#"{"version":1,"playlists":[],"deletedPlaylists":[],"tracks":[]}"#.utf8)
+        let decoded = try JSONDecoder().decode(MusicLibrary.self, from: legacy)
+        check(decoded.channelFiles == nil && decoded.removedChannelFiles == nil, "existing music catalogs decode without new fields")
     }
 
     static func testMusicUpgrade() throws {
@@ -112,8 +157,8 @@ struct RecoveryTests {
         check(descriptor.title == nil && descriptor.kind == "video", "existing photo/video descriptors decode unchanged")
         check(!DestructiveConfirmation.matches("", phrase: DestructiveConfirmation.reset), "empty confirmation cannot reset session")
         check(!DestructiveConfirmation.matches("ABMELDEN ", phrase: DestructiveConfirmation.logout), "logout requires the exact phrase")
-        check(!DestructiveConfirmation.matches("Ich möchte", phrase: DestructiveConfirmation.files), "partial sentence cannot delete Telegram files")
-        check(DestructiveConfirmation.matches(DestructiveConfirmation.files, phrase: DestructiveConfirmation.files), "complete deliberate deletion sentence is accepted")
+        check(!DestructiveConfirmation.matches("Ich möchte", phrase: DestructiveConfirmation.reset), "partial sentence cannot reset account credentials")
+        check(DestructiveConfirmation.matches(DestructiveConfirmation.logout, phrase: DestructiveConfirmation.logout), "exact logout confirmation is accepted")
     }
 
     static func testMusic() throws {

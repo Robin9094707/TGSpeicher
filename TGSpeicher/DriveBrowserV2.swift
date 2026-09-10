@@ -76,14 +76,15 @@ struct DriveBrowserV2: View {
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            if isSelecting, !selectedFiles.isEmpty {
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if isSelecting {
                 BulkActionBar(
                     count: selectedFiles.count,
                     onMove: { showingBulkMove = true },
                     onTags: { showingBulkTags = true },
                     onDelete: { confirmBulkDelete = true },
-                    onCancel: { selectedFiles.removeAll(); isSelecting = false }
+                    onCancel: { selectedFiles.removeAll(); isSelecting = false },
+                    onSelectAll: { selectedFiles = Set(files.map(\.id)) }
                 )
                 .padding(.horizontal, 14)
                 .padding(.bottom, 8)
@@ -126,13 +127,13 @@ struct DriveBrowserV2: View {
                 selectedFiles.removeAll(); isSelecting = false; showingBulkTags = false
             }
         }
-        .sheet(isPresented: $confirmBulkDelete) {
-            let entries = selectedEntries
-            TypedConfirmationSheet(title: "Dateien dauerhaft löschen", message: "\(entries.count) Dateien werden aus Telegram gelöscht.", phrase: DestructiveConfirmation.files) {
+        .alert("Dateien löschen?", isPresented: $confirmBulkDelete, presenting: selectedEntries) { entries in
+            Button("Ja", role: .destructive) {
                 selectedFiles.removeAll(); isSelecting = false
                 cloud.deleteFilesFromTelegram(entries)
             }
-        }
+            Button("Nein", role: .cancel) { }
+        } message: { entries in Text("\(entries.count) ausgewählte Dateien aus Telegram löschen?") }
     }
 
     private var selectedEntries: [CloudFileEntry] {
@@ -417,20 +418,26 @@ struct BulkActionBar: View {
     let onTags: () -> Void
     let onDelete: () -> Void
     let onCancel: () -> Void
+    var onSelectAll: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text("\(count)").font(.headline).monospacedDigit().frame(minWidth: 28)
-            Button(action: onMove) { Image(systemName: "folder") }
-            Button(action: onTags) { Image(systemName: "tag") }
-            Button(role: .destructive) { onDelete() } label: { Image(systemName: "trash") }
-            Spacer()
-            Button("Fertig", action: onCancel).fontWeight(.semibold)
+        VStack(spacing: 8) {
+            HStack {
+                Text("\(count) ausgewählt").font(.subheadline.weight(.semibold)).monospacedDigit()
+                Spacer()
+                if let onSelectAll { Button("Alle", action: onSelectAll).accessibilityLabel("Alle Dateien in dieser Ansicht auswählen") }
+                Button("Fertig", action: onCancel).fontWeight(.semibold)
+            }
+            HStack {
+                Button(action: onMove) { Label("Bewegen", systemImage: "folder") }
+                Spacer(minLength: 4)
+                Button(action: onTags) { Label("Tags", systemImage: "tag") }
+                Spacer(minLength: 4)
+                Button(role: .destructive, action: onDelete) { Label("Löschen", systemImage: "trash") }
+            }.font(.subheadline).buttonStyle(.bordered).disabled(count == 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(.ultraThinMaterial, in: Capsule())
-        .shadow(radius: 10, y: 5)
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
     }
 }
 
@@ -459,5 +466,6 @@ private extension View {
         }
     }
 }
+
 
 

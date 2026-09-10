@@ -37,6 +37,22 @@ struct MusicLibrary: Codable, Equatable {
     var playlists: [MusicPlaylist] = []
     var deletedPlaylists: [UUID: Double] = [:]
     var tracks: [UUID: MusicTrackInfo] = [:]
+    // Optional fields keep pre-3.3.3 catalogs decodable without a destructive migration.
+    var channelFiles: [CloudFileEntry]? = nil
+    var removedChannelFiles: [UUID: Double]? = nil
+
+    mutating func removeChannelFiles(_ ids: Set<UUID>) {
+        let removed = Set((channelFiles ?? []).filter { ids.contains($0.id) }.map(\.id))
+        guard !removed.isEmpty else { return }
+        var tombstones = removedChannelFiles ?? [:]
+        for id in removed { tombstones[id] = Date().timeIntervalSince1970 }
+        removedChannelFiles = tombstones
+        channelFiles?.removeAll { removed.contains($0.id) }
+        for i in playlists.indices {
+            let tracks = playlists[i].trackIDs.filter { !removed.contains($0) }
+            if tracks != playlists[i].trackIDs { playlists[i].edit(tracks: tracks) }
+        }
+    }
 
     func merging(_ other: MusicLibrary?) -> MusicLibrary {
         guard let other else { return self }
@@ -49,6 +65,15 @@ struct MusicLibrary: Codable, Equatable {
         result.playlists = lists.values.filter { result.deletedPlaylists[$0.id] == nil }
             .sorted { $0.id.uuidString < $1.id.uuidString }
         result.tracks.merge(other.tracks) { $0.updatedAt >= $1.updatedAt ? $0 : $1 }
+        var removed = removedChannelFiles ?? [:]
+        removed.merge(other.removedChannelFiles ?? [:], uniquingKeysWith: max)
+        var files = Dictionary((channelFiles ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, b in a.modifiedAt >= b.modifiedAt ? a : b })
+        for file in other.channelFiles ?? [] {
+            if let old = files[file.id], old.modifiedAt > file.modifiedAt { continue }
+            files[file.id] = file
+        }
+        result.channelFiles = files.values.filter { removed[$0.id] == nil }.sorted { $0.id.uuidString < $1.id.uuidString }
+        result.removedChannelFiles = removed
         return result
     }
 
@@ -58,6 +83,12 @@ struct MusicLibrary: Codable, Equatable {
     }
 
     func validate() throws {
+        let references = channelFiles ?? []
+        guard references.count <= 200_000, Set(references.map(\.id)).count == references.count,
+              references.allSatisfy({ $0.isMusic && $0.isComplete && $0.telegramChatID != nil }),
+              (removedChannelFiles ?? [:]).values.allSatisfy(\.isFinite) else {
+            throw RecoveryError.invalid("Die Kanal-Musik enthält ungültige Referenzen.")
+        }
         guard channel.map({ $0.updatedAt.isFinite && $0.title.count <= 200 }) ?? true,
               version == 1, playlists.count <= 10_000, tracks.count <= 200_000,
               Set(playlists.map(\.id)).count == playlists.count,
@@ -141,3 +172,37 @@ struct MusicQueue: Codable {
     }
 }
 
+
+
+extension CloudFileEntry {
+    /// Exact signature used by the old external-audio importer. Own uploads have
+    /// their own UUIDs and must never be moved merely because they share a channel.
+    var isLegacyChannelImport: Bool {
+        guard storageKind == "nativeAudio", sourceKey == nil, let chat = telegramChatID,
+              chunks.count == 1, let message = chunks.first?.telegramMessageID else { return false }
+        return id == CatalogCodec.stableMediaID(hash: "telegram-audio:\(message)", chatID: chat)
+    }
+}
+
+extension CloudIndex {
+    func separatingChannelMusic() -> CloudIndex {
+        guard recovery != nil else { return self }
+        var result = self
+        var music = recovery?.music ?? MusicLibrary()
+        var references = Dictionary((music.channelFiles ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, b in a.modifiedAt >= b.modifiedAt ? a : b })
+        let removed = music.removedChannelFiles ?? [:]
+        let known = Set(references.keys).union(removed.keys)
+        result.files.removeAll { file in
+            guard file.isLegacyChannelImport || known.contains(file.id) else { return false }
+            if removed[file.id] == nil, recovery?.deletedFiles[file.id] == nil {
+                if references[file.id] == nil { references[file.id] = file }
+            }
+            return true
+        }
+        let kept = references.values.filter { removed[$0.id] == nil && recovery?.deletedFiles[$0.id] == nil }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        if !kept.isEmpty || music.channelFiles != nil { music.channelFiles = kept }
+        if recovery?.music != nil || !kept.isEmpty { result.recovery?.music = music }
+        return result
+    }
+}

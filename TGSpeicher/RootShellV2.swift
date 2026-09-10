@@ -276,6 +276,7 @@ struct DriveShellV2: View {
         }
         .sheet(isPresented: $music.showingPlayer) { MusicPlayerSheet().environmentObject(music) }
         .onChange(of: music.error) { _, error in if error != nil { music.showingPlayer = true } }
+        .modifier(ChannelMusicRemovalConfirmation(music: music, enabled: !music.showingPlayer))
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: cloud.upload)
     }
 }

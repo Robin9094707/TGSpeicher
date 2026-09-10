@@ -668,13 +668,10 @@ struct FileDetailView: View {
             }
         }
         .navigationTitle("Datei")
-        .sheet(isPresented: $confirmDelete) {
-            if let file {
-                TypedConfirmationSheet(title: "Datei dauerhaft löschen", message: "„\(file.name)“ und die zugehörigen Nachrichten werden aus Telegram gelöscht.", phrase: DestructiveConfirmation.files) {
-                    cloud.deleteFileFromTelegram(file)
-                }
-            }
-        }
+        .alert("Datei löschen?", isPresented: $confirmDelete, presenting: file) { file in
+            Button("Ja", role: .destructive) { cloud.deleteFileFromTelegram(file) }
+            Button("Nein", role: .cancel) { }
+        } message: { file in Text("„\(file.name)“ aus Telegram löschen?") }
     }
 }
 
@@ -933,5 +930,6 @@ extension View {
         }
     }
 }
+
 
 

@@ -212,6 +212,7 @@ extension CloudStore {
 
     private func scanRecoveryChat(_ chats: [Int64], at position: Int) {
         guard position < chats.count else {
+            index = index.separatingChannelMusic()
             CatalogCodec.repairReferences(&index)
             // Merge can reveal a cycle spanning two individually valid snapshots.
             let snapshot = CatalogSnapshot(revision: index.revision, createdAt: Date(), folders: index.folders,
@@ -230,7 +231,7 @@ extension CloudStore {
             return
         }
         let chat = chats[position]
-        knownRecoveryFileIDs = Set(index.files.filter(\.isComplete).map(\.id))
+        knownRecoveryFileIDs = Set((index.files + (musicLibrary.channelFiles ?? [])).filter(\.isComplete).map(\.id))
         scanHighWater = index.recovery?.scannedThrough[String(chat)] ?? 0
         scannedRecoveryFiles = Dictionary((index.recovery?.partialFiles ?? []).filter { $0.telegramChatID == chat }
             .map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -322,4 +323,5 @@ extension CloudStore {
         lastError = message
     }
 }
+
 

@@ -29,7 +29,7 @@ final class MusicChannelManager: ObservableObject {
     var choice: MusicChannelChoice? { cloud.musicLibrary.channel }
     var files: [CloudFileEntry] {
         guard let chat = choice?.chatID else { return [] }
-        return cloud.index.files.filter { $0.isMusic && $0.isComplete && $0.telegramChatID == chat }
+        return cloud.musicFiles.filter { $0.isMusic && $0.isComplete && $0.telegramChatID == chat }
     }
     func select(_ channel: TelegramBackupDestination?) {
         let editedAt = max(Date().timeIntervalSince1970, (choice?.updatedAt ?? 0).nextUp)
@@ -119,7 +119,7 @@ final class MusicChannelManager: ObservableObject {
             "from_message_id": cursor, "offset": 0, "limit": 100, "filter": ["@type": "searchMessagesFilterAudio"],
             "topic_id": NSNull()]) { [weak self] response in
             guard let self else { return }
-            guard self.telegram.savedMessagesChatID == account, self.cloud.recoveryReady, !self.cloud.isRefreshing else {
+            guard self.telegram.savedMessagesChatID == account, self.choice?.chatID == chat, self.cloud.recoveryReady, !self.cloud.isRefreshing else {
                 self.isWorking = false; self.status = "Einlesen unterbrochen; bisherige Titel bleiben erhalten"; return
             }
             if response["@type"] as? String == "error" {
@@ -128,6 +128,10 @@ final class MusicChannelManager: ObservableObject {
             let messages = response["messages"] as? [[String: Any]] ?? []
             let previousIndex = self.cloud.index
             var added = 0
+            var library = self.cloud.musicLibrary
+            var references = library.channelFiles ?? []
+            var knownIDs = Set(self.cloud.musicFiles.map(\.id))
+            let knownMessages = Set(self.cloud.musicFiles.filter { $0.telegramChatID == chat }.flatMap { $0.chunks.compactMap(\.telegramMessageID) })
             for message in messages {
                 guard let messageID = TelegramClient.int64(message["id"]), self.importedIDs.insert(messageID).inserted,
                       let content = message["content"] as? [String: Any], let audio = content["audio"] as? [String: Any],
@@ -135,20 +139,26 @@ final class MusicChannelManager: ObservableObject {
                 let manifest = self.cloud.decodeManifest(from: DurableOutbox.caption(message))
                 let id = manifest?.fileID ?? CatalogCodec.stableMediaID(hash: "telegram-audio:\(messageID)", chatID: chat)
                 guard self.cloud.index.recovery?.deletedFiles[id] == nil,
-                      !self.cloud.index.files.contains(where: { $0.id == id || ($0.telegramChatID == chat && $0.chunks.contains { $0.telegramMessageID == messageID }) }) else { continue }
+                      library.removedChannelFiles?[id] == nil,
+                      !knownIDs.contains(id), !knownMessages.contains(messageID) else { continue }
                 let name = audio["file_name"] as? String ?? "Musik-\(messageID).mp3"
                 let file = CloudFileEntry(id: id, name: manifest?.name ?? name, totalSize: size,
                     chunks: [CloudChunk(index: 1, count: 1, telegramMessageID: messageID, telegramFileID: nil,
                         remoteUniqueID: (media["remote"] as? [String: Any])?["unique_id"] as? String, size: size, storedName: name)],
                     mimeType: audio["mime_type"] as? String ?? "audio/mpeg", telegramChatID: chat, storageKind: "nativeAudio")
-                self.cloud.index.files.append(file)
-                var library = self.cloud.musicLibrary
+                references.append(file)
+                knownIDs.insert(id)
                 library.tracks[id] = MusicTrackInfo(title: (audio["title"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                     artist: (audio["performer"] as? String).flatMap { $0.isEmpty ? nil : $0 }, duration: (audio["duration"] as? NSNumber)?.doubleValue)
-                self.cloud.index.recovery?.music = library
                 added += 1
             }
-            guard self.cloud.persist() else { self.cloud.index = previousIndex; self.isWorking = false; self.status = "Lokales Speichern fehlgeschlagen"; return }
+            if added > 0 {
+                library.channelFiles = references
+                do { try library.validate() }
+                catch { self.isWorking = false; self.status = error.localizedDescription; return }
+                self.cloud.index.recovery?.music = library
+            }
+            guard added == 0 || self.cloud.persist() else { self.cloud.index = previousIndex; self.isWorking = false; self.status = "Lokales Speichern fehlgeschlagen"; return }
             if added > 0 { self.cloud.catalogMutation += 1; self.cloud.forceNextCatalog = true; self.cloud.scheduleCatalogSync(delay: 3) }
             let total = count + added
             self.status = "\(total) Titel eingepflegt"
@@ -171,6 +181,11 @@ struct MusicChannelSection: View {
     @State private var picking = false
     @State private var creating = false
     @State private var title = "Meine Musik"
+    @State private var selecting = false
+    @State private var selected = Set<UUID>()
+    private var importedFiles: [CloudFileEntry] {
+        (cloud.musicLibrary.channelFiles ?? []).filter { $0.telegramChatID == channel.choice?.chatID }
+    }
     var body: some View {
         Section {
             NavigationLink {
@@ -185,16 +200,40 @@ struct MusicChannelSection: View {
             }
             Text(channel.status).font(.caption).foregroundStyle(.secondary)
         } header: { Text("Dein Musikkanal") } footer: {
-            Text("Neue Uploads werden als Telegram-Audio gesendet. Nicht unterstützte oder zu große Dateien werden verlustfrei als Dokument gesichert. Ein Kanalwechsel verschiebt und löscht keine vorhandenen Titel. Diese bleiben unter „Titel“ und in deinen Playlists.")
+            Text("Neue Uploads werden als Telegram-Audio gesendet. Nicht unterstützte oder zu große Dateien werden verlustfrei als Dokument gesichert. Ein Kanalwechsel verschiebt und löscht keine vorhandenen Titel. Importierte Kanal-Titel bleiben getrennt von „Meine Dateien“ unter „Titel“ und in deinen Playlists. Beim Entfernen aus der Mediathek bleibt das Kanal-Original erhalten.")
         }
         Section("Musik in diesem Kanal") {
             if !channel.files.isEmpty {
                 Button("Kanal abspielen", systemImage: "play.fill") { music.play(channel.files.map(\.id)) }
             }
+            if !importedFiles.isEmpty {
+                Button(selecting ? "Auswahl beenden" : "Importierte Titel auswählen", systemImage: "checkmark.circle") {
+                    selecting.toggle(); selected.removeAll()
+                }
+                if selecting {
+                    Button("Alle importierten Titel auswählen") { selected = Set(importedFiles.map(\.id)) }
+                    Button("Aus Mediathek entfernen (\(selected.count))", systemImage: "trash", role: .destructive) {
+                        music.pendingChannelRemovals = importedFiles.filter { selected.contains($0.id) }
+                        selecting = false; selected.removeAll()
+                    }.disabled(selected.isEmpty)
+                }
+            }
             ForEach(channel.files) { file in
-                MusicTrackRow(file: file).contentShape(Rectangle())
-                    .onTapGesture { music.play(channel.files.map(\.id), startingAt: file.id) }
-                    .contextMenu { MusicTrackMenu(file: file, cloud: cloud) }
+                if selecting {
+                    Button {
+                        if selected.contains(file.id) { selected.remove(file.id) } else { selected.insert(file.id) }
+                    } label: {
+                        HStack {
+                            Image(systemName: selected.contains(file.id) ? "checkmark.circle.fill" : "circle")
+                            MusicTrackRow(file: file)
+                        }
+                    }.buttonStyle(.plain)
+                        .disabled(!importedFiles.contains(where: { $0.id == file.id }))
+                } else {
+                    MusicTrackRow(file: file).contentShape(Rectangle())
+                        .onTapGesture { music.play(channel.files.map(\.id), startingAt: file.id) }
+                        .contextMenu { MusicTrackMenu(file: file, cloud: cloud) }
+                }
             }
         }
         .sheet(isPresented: $picking) { TGDocumentPicker(allowsMultipleSelection: true, onPicked: { urls in picking = false; channel.upload(urls) }, onCancel: { picking = false }) }
@@ -222,3 +261,4 @@ private struct MusicChannelPicker: View {
         .overlay { if telegram.writableBackupChannels.isEmpty { ContentUnavailableView("Keine Kanäle geladen", systemImage: "antenna.radiowaves.left.and.right", description: Text("Erstelle einen privaten Musikkanal oder aktualisiere die Liste. Du benötigst Schreibrechte.")) } }
     }
 }
+

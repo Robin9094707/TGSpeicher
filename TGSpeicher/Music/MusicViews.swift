@@ -157,6 +157,9 @@ struct MusicTrackMenu: View {
         } else {
             Button("Offline-Download entfernen", systemImage: "trash", role: .destructive) { music.removeOffline(file) }
         }
+        if cloud.musicLibrary.channelFiles?.contains(where: { $0.id == file.id }) == true {
+            Button("Aus Mediathek entfernen", systemImage: "trash", role: .destructive) { music.pendingChannelRemovals = [file] }
+        }
         Menu("Zur Playlist hinzufügen", systemImage: "music.note.list") {
             if cloud.musicLibrary.playlists.isEmpty { Text("Zuerst im Musikbereich eine Playlist erstellen") }
             ForEach(cloud.musicLibrary.playlists) { list in
@@ -195,7 +198,7 @@ struct MusicPlaylistView: View {
                 }
                 Section {
                     ForEach(playlist.trackIDs, id: \.self) { trackID in
-                        if let file = cloud.index.files.first(where: { $0.id == trackID }) {
+                        if let file = cloud.musicFile(id: trackID) {
                             MusicTrackRow(file: file).contentShape(Rectangle())
                                 .onTapGesture { music.play(playlist.trackIDs, startingAt: file.id) }
                                 .contextMenu { MusicTrackMenu(file: file, cloud: cloud) }
@@ -315,6 +318,9 @@ struct MusicMiniPlayer: View {
             }.disabled(music.offlineBusy).accessibilityLabel(music.isPlaying || music.isBuffering ? "Pausieren" : "Abspielen")
             Button { music.next() } label: { Image(systemName: "forward.end.fill").frame(width: 32, height: 44) }
                 .disabled(music.offlineBusy).accessibilityLabel("Nächster Titel")
+            Button { music.closePlayer() } label: {
+                Image(systemName: "xmark").font(.body.weight(.semibold)).frame(width: 36, height: 44)
+            }.accessibilityLabel("Musik stoppen und Player schließen")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .musicGlass(corner: 22)
@@ -401,13 +407,14 @@ struct MusicPlayerSheet: View {
             Button("Erneut versuchen") { music.togglePlayback() }
             Button("Schließen", role: .cancel) { music.error = nil }
         } message: { Text(music.error ?? "") }
+        .modifier(ChannelMusicRemovalConfirmation(music: music, enabled: true))
     }
     private var queuePanel: some View {
         LazyVStack(spacing: 0) {
             ForEach(Array(music.queue.ids.enumerated()), id: \.element) { index, id in
                 HStack {
                     Button { music.jumpTo(id) } label: {
-                        if let file = music.cloud.index.files.first(where: { $0.id == id }) { MusicTrackRow(file: file) }
+                        if let file = music.cloud.musicFile(id: id) { MusicTrackRow(file: file) }
                         else { Label("Titel nicht verfügbar", systemImage: "exclamationmark.icloud") }
                     }.buttonStyle(.plain)
                     Menu {
@@ -509,6 +516,22 @@ private struct MusicSeekControls: View {
             }).disabled(clock.duration <= 0 || offlineBusy).tint(.cyan).accessibilityLabel("Wiedergabeposition")
             HStack { Text(musicTime(seeking ? seekValue : clock.elapsed)); Spacer(); Text("−" + musicTime(max(0, clock.duration - (seeking ? seekValue : clock.elapsed)))) }
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct ChannelMusicRemovalConfirmation: ViewModifier {
+    @ObservedObject var music: MusicPlayer
+    var enabled: Bool
+    func body(content: Content) -> some View {
+        content.alert("Aus Mediathek entfernen?", isPresented: Binding(
+            get: { enabled && !music.pendingChannelRemovals.isEmpty },
+            set: { if !$0 && enabled { music.pendingChannelRemovals = [] } }
+        ), presenting: music.pendingChannelRemovals) { files in
+            Button("Ja", role: .destructive) { music.cloud.removeChannelMusic(Set(files.map(\.id))) }
+            Button("Nein", role: .cancel) { }
+        } message: { files in
+            Text("\(files.count) Titel aus deiner Musikbibliothek entfernen? Die Originaldateien im Kanal bleiben erhalten.")
         }
     }
 }
